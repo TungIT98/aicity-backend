@@ -1,0 +1,305 @@
+{
+  "name": "AI City Customer Success Workflow",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 1
+            }
+          ]
+        }
+      },
+      "id": "scheduler-trigger",
+      "name": "Hourly Check",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT id, email, name, company_name, created_at FROM customers WHERE status = 'active'"
+      },
+      "id": "get-active-customers",
+      "name": "Get Active Customers",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [450, 300],
+      "credentials": {
+        "postgres": "nova_postgres"
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "const moment = require('moment');\nconst customers = items;\nconst results = [];\n\nfor (const customer of customers) {\n  const createdAt = new Date(customer.json.created_at);\n  const daysSinceSignup = moment().diff(moment(createdAt), 'days');\n  \n  // Onboarding sequence (first 7 days)\n  if (daysSinceSignup <= 7) {\n    results.push({\n      json: {\n        ...customer.json,\n        action_type: 'onboarding',\n        priority: 'high',\n        message: `Day ${daysSinceSignup + 1} - ${daysSinceSignup === 0 ? 'Welcome! Let\\'s get started' : 'Continue your onboarding'}`\n      }\n    });\n  }\n  // Weekly check-in (day 7, 14, 21, etc.)\n  else if (daysSinceSignup % 7 === 0) {\n    results.push({\n      json: {\n        ...customer.json,\n        action_type: 'checkin',\n        priority: 'medium',\n        message: 'Weekly check-in: How can we help you succeed?'\n      }\n    });\n  }\n  // Monthly review (day 30, 60, 90, etc.)\n  else if (daysSinceSignup % 30 === 0) {\n    results.push({\n      json: {\n        ...customer.json,\n        action_type: 'monthly_review',\n        priority: 'high',\n        message: 'Monthly success review: Let\\'s discuss your progress'\n      }\n    });\n  }\n}\n\nreturn results;"
+      },
+      "id": "determine-actions",
+      "name": "Determine Actions",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [650, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT * FROM customer_health_scores WHERE customer_id = {{ $json.id }} ORDER BY calculated_at DESC LIMIT 1"
+      },
+      "id": "check-health",
+      "name": "Check Health Score",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [850, 300],
+      "credentials": {
+        "postgres": "nova_postgres"
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "number": [
+            {
+              "value1": "={{ $json.health_score }}",
+              "operation": "lt",
+              "value2": 40
+            }
+          ]
+        }
+      },
+      "id": "high-risk-filter",
+      "name": "High Risk Filter",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 1,
+      "position": [1050, 250]
+    },
+    {
+      "parameters": {
+        "to": "={{ $json.email }}",
+        "subject": "We'd love to help you succeed",
+        "body": "Hi {{ $json.name }},\n\nWe noticed you haven't been as active lately. Is there anything we can do to help?\n\nBest,\nThe AI City Team"
+      },
+      "id": "re-engagement-email",
+      "name": "Re-engagement Email",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 1,
+      "position": [1250, 200],
+      "credentials": {
+        "gmail": "ai-city-gmail"
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO churn_risk_alerts (customer_id, risk_level, trigger_events, risk_score) VALUES ({{ $json.id }}, 'high', '{{ JSON.stringify($json) }}', {{ $json.health_score }})"
+      },
+      "id": "create-churn-alert",
+      "name": "Create Churn Alert",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [1250, 300],
+      "credentials": {
+        "postgres": "nova_postgres"
+      }
+    },
+    {
+      "parameters": {
+        "to": "={{ $json.email }}",
+        "subject": "={{ $json.message }}",
+        "body": "Hi {{ $json.name }},\n\n{{ $json.message }}\n\nBest,\nThe AI City Team"
+      },
+      "id": "success-email",
+      "name": "Success Email",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 1,
+      "position": [1050, 450],
+      "credentials": {
+        "gmail": "ai-city-gmail"
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO customer_checkins (customer_id, checkin_type, scheduled_at, status) VALUES ({{ $json.id }}, '{{ $json.action_type }}', NOW(), 'completed')"
+      },
+      "id": "log-checkin",
+      "name": "Log Check-in",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [1250, 450],
+      "credentials": {
+        "postgres": "nova_postgres"
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.action_type }}",
+              "operation": "equals",
+              "value2": "onboarding"
+            }
+          ]
+        }
+      },
+      "id": "onboarding-filter",
+      "name": "Onboarding Filter",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 1,
+      "position": [850, 450]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT * FROM customer_onboarding_milestones WHERE customer_id = {{ $json.id }} AND status = 'pending' ORDER BY milestone_order LIMIT 1"
+      },
+      "id": "get-next-milestone",
+      "name": "Get Next Milestone",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [1050, 600],
+      "credentials": {
+        "postgres": "nova_postgres"
+      }
+    },
+    {
+      "parameters": {
+        "to": "={{ $json.email }}",
+        "subject": "Your next step: {{ $json.milestone_name }}",
+        "body": "Hi {{ $json.name }},\n\nLet's complete your {{ $json.milestone_name }}!\n\nThis is step {{ $json.milestone_order }} of your onboarding.\n\nBest,\nThe AI City Team"
+      },
+      "id": "milestone-email",
+      "name": "Milestone Email",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 1,
+      "position": [1250, 600],
+      "credentials": {
+        "gmail": "ai-city-gmail"
+      }
+    },
+    {
+      "parameters": {
+        "webhookUrl": "http://localhost:5678/webhook/customer-success",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "manual-trigger",
+      "name": "Manual Trigger (Webhook)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [250, 500]
+    }
+  ],
+  "connections": {
+    "Hourly Check": {
+      "main": [
+        [
+          {
+            "node": "Get Active Customers",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Active Customers": {
+      "main": [
+        [
+          {
+            "node": "Determine Actions",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Determine Actions": {
+      "main": [
+        [
+          {
+            "node": "Check Health Score",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Health Score": {
+      "main": [
+        [
+          {
+            "node": "High Risk Filter",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Onboarding Filter",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "High Risk Filter": {
+      "main": [
+        [
+          {
+            "node": "Re-engagement Email",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Create Churn Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Onboarding Filter": {
+      "main": [
+        [
+          {
+            "node": "Get Next Milestone",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Next Milestone": {
+      "main": [
+        [
+          {
+            "node": "Milestone Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Success Email": {
+      "main": [
+        [
+          {
+            "node": "Log Check-in",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": ["customer-success", "automation"],
+  "triggerCount": 1,
+  "updatedAt": "2026-03-20T00:00:00.000Z",
+  "versionId": "1"
+}
