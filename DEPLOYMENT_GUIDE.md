@@ -5,8 +5,25 @@ This guide covers deploying AI City backend to production on aicity.com (IP: 3.3
 
 ## Prerequisites
 - Domain: aicity.com (already registered)
-- Budget: Self-hosted infrastructure already in place (PostgreSQL, Qdrant, n8n)
-- SSL: Will be handled by hosting platform
+- GitHub repo: `TungIT98/aicity-backend` (must be created manually - see below)
+- Railway or Render account for hosting
+
+## ⚠️ IMPORTANT: Create GitHub Repo First
+
+The backend code is ready in a local git repo. Create the GitHub repo:
+
+1. Go to: https://github.com/new
+2. Repository name: `aicity-backend`
+3. Description: "AI City Backend API - FastAPI server for AI City services"
+4. Make it Public
+5. Do NOT initialize with README
+6. Copy the repo URL (e.g., `https://github.com/TungIT98/aicity-backend.git`)
+7. Add remote to local repo:
+   ```bash
+   cd backend
+   git remote add origin https://github.com/TungIT98/aicity-backend.git
+   git push -u origin master
+   ```
 
 ## Deployment Options
 
