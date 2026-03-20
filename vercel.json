@@ -3,7 +3,7 @@
   "builds": [
     {
       "src": "main.py",
-      "use": "vercel-python"
+      "use": "@vercel/python"
     }
   ],
   "routes": [
@@ -11,13 +11,5 @@
       "src": "/(.*)",
       "dest": "main.py"
     }
-  ],
-  "env": {
-    "DB_HOST": "ep-weathered-river-ad127i3j-pooler.c-2.us-east-1.aws.neon.tech",
-    "DB_PORT": "5432",
-    "DB_NAME": "neondb",
-    "DB_USER": "neondb_owner",
-    "DB_PASSWORD": "npg_RcvCyH5LJn9V",
-    "JWT_SECRET": "7d00ca1435d339b18a4b5358bef9427befd09342bffef65a3f44049664a53141"
-  }
+  ]
 }
