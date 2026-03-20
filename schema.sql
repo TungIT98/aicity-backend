@@ -301,3 +301,9 @@ CREATE INDEX IF NOT EXISTS idx_subscriptions_subscription_id ON subscriptions(su
 CREATE INDEX IF NOT EXISTS idx_subscriptions_customer_email ON subscriptions(customer_email);
 CREATE INDEX IF NOT EXISTS idx_subscriptions_status ON subscriptions(status);
 CREATE INDEX IF NOT EXISTS idx_subscriptions_expires ON subscriptions(expires_at);
+
+-- Composite indexes for performance optimization (AIC-405)
+CREATE INDEX IF NOT EXISTS idx_leads_status_source ON leads(status, source);
+CREATE INDEX IF NOT EXISTS idx_leads_status_created ON leads(status, created_at);
+CREATE INDEX IF NOT EXISTS idx_revenue_transactions_status_date ON revenue_transactions(status, transaction_date);
+CREATE INDEX IF NOT EXISTS idx_subscriptions_status_expires ON subscriptions(status, expires_at);
