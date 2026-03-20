@@ -172,3 +172,132 @@ CREATE INDEX IF NOT EXISTS idx_invoices_created ON invoices(created_at DESC);
 
 -- Invoice sequence for serial number generation
 CREATE SEQUENCE IF NOT EXISTS invoice_serial_seq START WITH 1;
+
+-- ============== Payment System Tables ==============
+
+-- Payments table
+CREATE TABLE IF NOT EXISTS payments (
+    id SERIAL PRIMARY KEY,
+    payment_id VARCHAR(50) UNIQUE NOT NULL,  -- PAY-XXXXXXXXXXXX format
+    order_id VARCHAR(50) NOT NULL,  -- ORD-YYYYMMDD-XXXXXX format
+
+    amount NUMERIC(15, 0) NOT NULL,  -- Amount in VND
+    currency VARCHAR(10) NOT NULL DEFAULT 'VND',
+    status VARCHAR(20) NOT NULL DEFAULT 'pending',  -- pending, completed, failed, refunded
+
+    payment_method VARCHAR(20) NOT NULL,  -- stripe, vietqr, momo, bank_transfer
+
+    -- Customer info
+    customer_email VARCHAR(255) NOT NULL,
+    customer_name VARCHAR(255),
+
+    -- Payment method specific
+    checkout_url VARCHAR(500),  -- For Stripe/MoMo redirect
+    qr_code VARCHAR(1000),  -- For VietQR QR code
+    transaction_id VARCHAR(100),  -- Provider's transaction ID
+
+    -- Expiration
+    expires_at TIMESTAMP NOT NULL,
+
+    -- Metadata
+    metadata JSONB DEFAULT '{}',
+
+    -- Timestamps
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
+-- Indexes for payment queries
+CREATE INDEX IF NOT EXISTS idx_payments_payment_id ON payments(payment_id);
+CREATE INDEX IF NOT EXISTS idx_payments_order_id ON payments(order_id);
+CREATE INDEX IF NOT EXISTS idx_payments_status ON payments(status);
+CREATE INDEX IF NOT EXISTS idx_payments_customer_email ON payments(customer_email);
+CREATE INDEX IF NOT EXISTS idx_payments_expires ON payments(expires_at);
+
+-- Revenue Transactions table
+CREATE TABLE IF NOT EXISTS revenue_transactions (
+    id SERIAL PRIMARY KEY,
+    transaction_id VARCHAR(50) UNIQUE NOT NULL,  -- TXN-XXXXXXXXXXXX format
+
+    -- Payment reference
+    payment_id VARCHAR(50) REFERENCES payments(payment_id),
+    order_id VARCHAR(50),
+
+    -- Revenue amount
+    amount NUMERIC(15, 0) NOT NULL,  -- Amount in VND
+    currency VARCHAR(10) NOT NULL DEFAULT 'VND',
+
+    -- Customer
+    customer_email VARCHAR(255) NOT NULL,
+    customer_name VARCHAR(255),
+    customer_location VARCHAR(100),  -- City, Country for globe visualization
+
+    -- Source
+    payment_method VARCHAR(20) NOT NULL,  -- stripe, vietqr, momo, bank_transfer
+    transaction_ref VARCHAR(100),  -- Provider's transaction ID
+
+    -- Status
+    status VARCHAR(20) NOT NULL DEFAULT 'completed',  -- completed, refunded
+
+    -- Geo location for globe (latitude, longitude)
+    latitude NUMERIC(10, 6),
+    longitude NUMERIC(10, 6),
+
+    -- Metadata
+    metadata JSONB DEFAULT '{}',
+
+    -- Timestamps
+    transaction_date DATE NOT NULL DEFAULT CURRENT_DATE,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+-- Indexes for revenue queries
+CREATE INDEX IF NOT EXISTS idx_revenue_transaction_id ON revenue_transactions(transaction_id);
+CREATE INDEX IF NOT EXISTS idx_revenue_customer_email ON revenue_transactions(customer_email);
+CREATE INDEX IF NOT EXISTS idx_revenue_status ON revenue_transactions(status);
+CREATE INDEX IF NOT EXISTS idx_revenue_transaction_date ON revenue_transactions(transaction_date);
+CREATE INDEX IF NOT EXISTS idx_revenue_payment_method ON revenue_transactions(payment_method);
+
+-- Subscriptions table
+CREATE TABLE IF NOT EXISTS subscriptions (
+    id SERIAL PRIMARY KEY,
+    subscription_id VARCHAR(50) UNIQUE NOT NULL,  -- SUB-XXXXXXXXXX format
+
+    -- Customer
+    customer_id UUID REFERENCES users(id),
+    customer_email VARCHAR(255) NOT NULL,
+
+    -- Plan
+    plan VARCHAR(20) NOT NULL,  -- starter, pro, business
+    plan_name VARCHAR(50),
+
+    -- Status
+    status VARCHAR(20) NOT NULL DEFAULT 'active',  -- active, paused, cancelled, expired
+
+    -- Period
+    started_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    expires_at TIMESTAMP NOT NULL,
+    paused_at TIMESTAMP,
+    cancelled_at TIMESTAMP,
+
+    -- Payment
+    payment_id VARCHAR(50) REFERENCES payments(payment_id),
+
+    -- Limits
+    ai_runs_used INTEGER DEFAULT 0,
+    ai_runs_limit INTEGER,  -- Based on plan
+    documents_limit INTEGER,  -- Based on plan
+
+    -- Auto-renewal
+    auto_renew BOOLEAN DEFAULT true,
+
+    -- Timestamps
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
+-- Indexes for subscription queries
+CREATE INDEX IF NOT EXISTS idx_subscriptions_subscription_id ON subscriptions(subscription_id);
+CREATE INDEX IF NOT EXISTS idx_subscriptions_customer_email ON subscriptions(customer_email);
+CREATE INDEX IF NOT EXISTS idx_subscriptions_status ON subscriptions(status);
+CREATE INDEX IF NOT EXISTS idx_subscriptions_expires ON subscriptions(expires_at);

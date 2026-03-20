@@ -900,6 +900,14 @@ app.include_router(feedback_router)
 from revenue_report import router as revenue_report_router
 app.include_router(revenue_report_router)
 
+# Import revenue API router
+from revenue_api import router as revenue_api_router
+app.include_router(revenue_api_router)
+
+# Import CEO Dashboard router
+from ceo_dashboard import router as ceo_dashboard_router
+app.include_router(ceo_dashboard_router)
+
 # Import tracking module
 import tracking
 from tracking import (
