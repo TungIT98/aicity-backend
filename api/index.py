@@ -266,7 +266,6 @@ async def payments_checkout(req: CheckoutRequest):
     plan = PRICING_PLANS[req.plan_id]
     amount = plan["amount"]
     purpose = f"AI City {plan['name']}"
-
     method = req.payment_method.lower()
 
     if method == "stripe":
@@ -330,12 +329,12 @@ async def payments_checkout(req: CheckoutRequest):
                 "account_name": VIETQR_ACCOUNT_NAME,
             },
             "instructions": [
-                "Quét mã QR bằng app ngân hàng",
-                f"Nhập số tiền: {amount:,} VND",
-                f"Nội dung chuyển khoản: {purpose}",
-                "Hoàn tất thanh toán",
+                "Quet ma QR bang app ngan hang",
+                f"Nhap so tien: {amount:,} VND",
+                f"Noi dung chuyen khoan: {purpose}",
+                "Hoan tat thanh toan",
             ],
-            "note": "Thanh toán sẽ được xác nhận trong 1-5 phút sau khi chuyển khoản"
+            "note": "Thanh toan se duoc xac nhan trong 1-5 phut sau khi chuyen khoan"
         }
     else:
         raise HTTPException(status_code=400, detail=f"Unsupported payment method: {method}")
