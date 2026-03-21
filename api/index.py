@@ -1,6 +1,7 @@
 import os
 import sys
 import json
+import datetime
 
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -27,6 +28,12 @@ STRIPE_ENABLED = os.getenv("STRIPE_ENABLED", "false").lower() == "true"
 STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "")
 STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "")
 
+# VietQR Bank Transfer Config (Techcombank)
+VIETQR_BANK_NAME = os.getenv("VIETQR_BANK_NAME", "Techcombank")
+VIETQR_BANK_BIN = os.getenv("VIETQR_BANK_BIN", "970403")
+VIETQR_ACCOUNT_NUMBER = os.getenv("VIETQR_ACCOUNT_NUMBER", "1903777779")
+VIETQR_ACCOUNT_NAME = os.getenv("VIETQR_ACCOUNT_NAME", "TRAN THANH TUNG")
+
 app = FastAPI(title="AI City API")
 
 # CORS middleware
@@ -40,10 +47,77 @@ app.add_middleware(
 
 # Pricing plans (VND)
 PRICING_PLANS = {
-    "starter": {"name": "Starter Plan", "amount": 299000},
-    "business": {"name": "Business Plan", "amount": 999000},
-    "pro": {"name": "Pro Plan", "amount": 1490000},
+    "starter": {"name": "Starter", "amount": 299000, "credits": 5000, "period": "monthly"},
+    "pro": {"name": "Pro", "amount": 799000, "credits": 15000, "period": "monthly"},
+    "business": {"name": "Business", "amount": 1999000, "credits": 50000, "period": "monthly"},
 }
+
+
+# ============== VietQR Generation ==============
+
+def normalize_vietnamese(text: str) -> str:
+    """Convert Vietnamese diacritics to ASCII for QR code."""
+    vietnamese_map = {
+        'à': 'a', 'á': 'a', 'ả': 'a', 'ã': 'a', 'â': 'a', 'ầ': 'a', 'ấ': 'a', 'ẩ': 'a', 'ẫ': 'a', 'ậ': 'a',
+        'è': 'e', 'é': 'e', 'ẻ': 'e', 'ẽ': 'e', 'ê': 'e', 'ề': 'e', 'ế': 'e', 'ể': 'e', 'ễ': 'e', 'ệ': 'e',
+        'ì': 'i', 'í': 'i', 'ỉ': 'i', 'ĩ': 'i', 'î': 'i',
+        'ò': 'o', 'ó': 'o', 'ỏ': 'o', 'õ': 'o', 'ô': 'o', 'ồ': 'o', 'ố': 'o', 'ổ': 'o', 'ỗ': 'o', 'ộ': 'o',
+        'ù': 'u', 'ú': 'u', 'ủ': 'u', 'ũ': 'u', 'ư': 'u', 'ừ': 'u', 'ứ': 'u', 'ử': 'u', 'ữ': 'u', 'ự': 'u',
+        'ỳ': 'y', 'ý': 'y', 'ỷ': 'y', 'ỹ': 'y', 'ỵ': 'y',
+        'đ': 'd',
+    }
+    return ''.join(vietnamese_map.get(c, c) for c in text)
+
+
+def calculate_crc16(data: str) -> str:
+    """Calculate CRC16 for VietQR string."""
+    crc = 0xFFFF
+    for byte in data.encode('ascii'):
+        crc ^= byte
+        for _ in range(8):
+            if crc & 0x0001:
+                crc = (crc >> 1) ^ 0x1021
+            else:
+                crc >>= 1
+    return format(crc, '04X').upper()
+
+
+def generate_vietqr_string(bank_bin: str, account_number: str, account_name: str, amount: int, purpose: str) -> str:
+    """Generate VietQR BPCA format string."""
+    fields = [
+        ('00', '010212'),
+        ('01', '12'),
+        ('30', bank_bin),
+        ('31', account_number),
+        ('32', normalize_vietnamese(account_name).upper()),
+        ('33', str(amount)),
+        ('60', purpose[:50]),
+    ]
+    qr_string = ''
+    for fid, fval in fields:
+        qr_string += fid + str(len(fval)).zfill(2) + fval
+    crc = calculate_crc16(qr_string)
+    return qr_string + '81' + '04' + crc
+
+
+def generate_vietqr_base64(amount: int, purpose: str = "AI City Payment") -> str:
+    """Generate VietQR as base64 PNG image."""
+    import qrcode
+    import io
+    import base64
+
+    qr_str = generate_vietqr_string(
+        VIETQR_BANK_BIN,
+        VIETQR_ACCOUNT_NUMBER,
+        VIETQR_ACCOUNT_NAME,
+        amount,
+        purpose
+    )
+    img = qrcode.make(qr_str)
+    buf = io.BytesIO()
+    img.save(buf, format='PNG')
+    buf.seek(0)
+    return base64.b64encode(buf.read()).decode('utf-8')
 
 class HealthResponse(BaseModel):
     ollama: str
@@ -52,7 +126,7 @@ class HealthResponse(BaseModel):
 
 class CheckoutRequest(BaseModel):
     plan_id: str
-    payment_method: str = "stripe"
+    payment_method: str = "vietqr"
     customer_email: Optional[str] = None
     customer_name: Optional[str] = None
 
@@ -116,27 +190,72 @@ async def analytics_overview():
 
 @app.get("/payments/methods")
 async def payments_methods():
-    """Get available payment methods"""
+    """Get available payment methods with VietQR bank details."""
     methods = []
     if STRIPE_ENABLED and STRIPE_SECRET_KEY:
-        methods.append({"id": "stripe", "name": "Stripe", "enabled": True})
-    # Legacy methods (always available)
-    methods.extend([
-        {"id": "vietqr", "name": "VietQR", "enabled": True},
-        {"id": "momo", "name": "MoMo", "enabled": True},
-        {"id": "zalopay", "name": "ZaloPay", "enabled": True},
-    ])
-    return {"payment_methods": methods, "stripe_enabled": STRIPE_ENABLED and bool(STRIPE_SECRET_KEY)}
+        methods.append({"id": "stripe", "name": "Stripe", "description": "Credit/Debit Card (Visa, Mastercard)", "enabled": True})
+
+    # VietQR always available with bank details
+    methods.append({
+        "id": "vietqr",
+        "name": "VietQR",
+        "description": "Quét mã QR bằng app ngân hàng Việt Nam",
+        "enabled": True,
+        "bank_details": {
+            "bank_name": VIETQR_BANK_NAME,
+            "bank_bin": VIETQR_BANK_BIN,
+            "account_number": VIETQR_ACCOUNT_NUMBER,
+            "account_name": VIETQR_ACCOUNT_NAME,
+        }
+    })
+
+    return {
+        "payment_methods": methods,
+        "stripe_enabled": STRIPE_ENABLED and bool(STRIPE_SECRET_KEY),
+        "vietqr_enabled": True
+    }
+
+
+@app.get("/payments/plans")
+async def payments_plans():
+    """Get subscription plans with VietQR codes."""
+    plans = []
+    for plan_id, plan in PRICING_PLANS.items():
+        amount = plan["amount"]
+        purpose = f"AI City {plan['name']}"
+        qr_base64 = generate_vietqr_base64(amount, purpose)
+        plans.append({
+            "id": plan_id,
+            "name": plan["name"],
+            "amount": amount,
+            "amount_formatted": f"{amount:,} VND",
+            "credits": plan.get("credits", 0),
+            "period": plan.get("period", "monthly"),
+            "qr_code": f"data:image/png;base64,{qr_base64}",
+            "bank_details": {
+                "bank_name": VIETQR_BANK_NAME,
+                "bank_bin": VIETQR_BANK_BIN,
+                "account_number": VIETQR_ACCOUNT_NUMBER,
+                "account_name": VIETQR_ACCOUNT_NAME,
+            },
+            "instructions": [
+                "Quét mã QR bằng ứng dụng ngân hàng (Techcombank, Vietcombank, VietinBank...)",
+                "Kiểm tra thông tin: " + VIETQR_ACCOUNT_NAME,
+                f"Nhập số tiền: {amount:,} VND",
+                f"Nội dung: {purpose}",
+                "Hoàn tất thanh toán và chờ xác nhận trong 1-5 phút",
+            ]
+        })
+    return {
+        "plans": plans,
+        "currency": "VND",
+        "stripe_enabled": STRIPE_ENABLED and bool(STRIPE_SECRET_KEY),
+        "stripe_mode": "live" if (STRIPE_ENABLED and "sk_live" in STRIPE_SECRET_KEY) else "test",
+    }
 
 @app.post("/payments/checkout")
 async def payments_checkout(req: CheckoutRequest):
-    """Create Stripe checkout session"""
-    if not STRIPE_ENABLED or not STRIPE_SECRET_KEY:
-        raise HTTPException(
-            status_code=400,
-            detail="Stripe is not configured. Set STRIPE_ENABLED=true and STRIPE_SECRET_KEY."
-        )
-
+    """Create payment checkout session (Stripe or VietQR)"""
     if req.plan_id not in PRICING_PLANS:
         raise HTTPException(
             status_code=400,
@@ -144,39 +263,80 @@ async def payments_checkout(req: CheckoutRequest):
         )
 
     plan = PRICING_PLANS[req.plan_id]
+    amount = plan["amount"]
+    purpose = f"AI City {plan['name']}"
 
-    try:
-        import stripe
-        stripe.api_key = STRIPE_SECRET_KEY
-        session = stripe.checkout.Session.create(
-            payment_method_types=["card"],
-            line_items=[{
-                "price_data": {
-                    "currency": "vnd",
-                    "product_data": {"name": plan["name"]},
-                    "unit_amount": plan["amount"],
-                },
-                "quantity": 1,
-            }],
-            mode="payment",
-            success_url="https://aicity.vn/success?session_id={CHECKOUT_SESSION_ID}",
-            cancel_url="https://aicity.vn/pricing",
-            customer_email=req.customer_email or None,
-            metadata={"plan_id": req.plan_id, "plan_name": plan["name"]}
-        )
+    method = req.payment_method.lower()
+
+    if method == "stripe":
+        if not STRIPE_ENABLED or not STRIPE_SECRET_KEY:
+            raise HTTPException(
+                status_code=400,
+                detail="Stripe is not configured. Use VietQR instead."
+            )
+        try:
+            import stripe
+            stripe.api_key = STRIPE_SECRET_KEY
+            session = stripe.checkout.Session.create(
+                payment_method_types=["card"],
+                line_items=[{
+                    "price_data": {
+                        "currency": "vnd",
+                        "product_data": {"name": plan["name"]},
+                        "unit_amount": amount,
+                    },
+                    "quantity": 1,
+                }],
+                mode="payment",
+                success_url="https://aicity.vn/success?session_id={CHECKOUT_SESSION_ID}",
+                cancel_url="https://aicity.vn/pricing",
+                customer_email=req.customer_email or None,
+                metadata={"plan_id": req.plan_id, "plan_name": plan["name"]}
+            )
+            return {
+                "checkout_id": session.id,
+                "checkout_url": session.url,
+                "payment_method": "stripe",
+                "plan_id": req.plan_id,
+                "plan_name": plan["name"],
+                "amount": amount,
+                "currency": "VND",
+                "status": "pending"
+            }
+        except ImportError:
+            raise HTTPException(status_code=500, detail="Stripe package not installed")
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+    elif method == "vietqr":
+        qr_base64 = generate_vietqr_base64(amount, purpose)
+        payment_id = f"AIC-{datetime.now().strftime('%Y%m%d%H%M%S')}"
         return {
-            "checkout_id": session.id,
-            "checkout_url": session.url,
+            "payment_id": payment_id,
+            "payment_method": "vietqr",
             "plan_id": req.plan_id,
             "plan_name": plan["name"],
-            "amount": plan["amount"],
+            "amount": amount,
+            "amount_formatted": f"{amount:,} VND",
             "currency": "VND",
-            "status": "pending"
+            "status": "pending",
+            "qr_code": f"data:image/png;base64,{qr_base64}",
+            "bank_details": {
+                "bank_name": VIETQR_BANK_NAME,
+                "bank_bin": VIETQR_BANK_BIN,
+                "account_number": VIETQR_ACCOUNT_NUMBER,
+                "account_name": VIETQR_ACCOUNT_NAME,
+            },
+            "instructions": [
+                "Quét mã QR bằng app ngân hàng",
+                f"Nhập số tiền: {amount:,} VND",
+                f"Nội dung chuyển khoản: {purpose}",
+                "Hoàn tất thanh toán",
+            ],
+            "note": "Thanh toán sẽ được xác nhận trong 1-5 phút sau khi chuyển khoản"
         }
-    except ImportError:
-        raise HTTPException(status_code=500, detail="Stripe package not installed")
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    else:
+        raise HTTPException(status_code=400, detail=f"Unsupported payment method: {method}")
 
 @app.post("/payments/webhook")
 async def payments_webhook(request: Request):
