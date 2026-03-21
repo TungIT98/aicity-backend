@@ -912,6 +912,10 @@ app.include_router(ceo_dashboard_router)
 from analytics import router as analytics_router
 app.include_router(analytics_router)
 
+# Import Globe AI City data layer router
+from globe import router as globe_router
+app.include_router(globe_router)
+
 # Import tracking module
 import tracking
 from tracking import (
