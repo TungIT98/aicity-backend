@@ -104,7 +104,6 @@ def generate_vietqr_string(bank_bin: str, account_number: str, account_name: str
 def generate_vietqr_data(amount: int, purpose: str = "AI City Payment") -> dict:
     """Generate VietQR data: base64 image + raw QR string."""
     import base64
-    import urllib.request
 
     qr_str = generate_vietqr_string(
         VIETQR_BANK_BIN,
@@ -113,20 +112,12 @@ def generate_vietqr_data(amount: int, purpose: str = "AI City Payment") -> dict:
         amount,
         purpose
     )
-    # Also generate deep link URL for banking apps
-    deep_link = f"https://img.vietqr.io/image/{VIETQR_BANK_NAME.lower()}-{VIETQR_ACCOUNT_NUMBER}-compact.png?amount={amount}&addInfo={urllib.parse.quote(purpose)}&accountName={urllib.parse.quote(VIETQR_ACCOUNT_NAME)}"
+    # VietQR.io hosted QR image URL (no server-side generation needed)
+    qr_image_url = f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&format=png&data={urllib.parse.quote(qr_str)}"
+    # VietQR.io direct image (recommended for banking apps)
+    deep_link = f"https://img.vietqr.io/image/techcombank-1903777779-compact.png?amount={amount}&addInfo={urllib.parse.quote(purpose)}&accountName={urllib.parse.quote(VIETQR_ACCOUNT_NAME)}"
 
-    try:
-        # Try VietQR.io API first
-        api_url = f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&data={urllib.parse.quote(qr_str)}"
-        with urllib.request.urlopen(api_url, timeout=10) as response:
-            qr_base64 = base64.b64encode(response.read()).decode('utf-8')
-            return {"qr_code": f"data:image/png;base64,{qr_base64}", "qr_string": qr_str, "deep_link": deep_link}
-    except Exception:
-        pass
-
-    # Fallback: VietQR.io deep link image
-    return {"qr_code": deep_link, "qr_string": qr_str, "deep_link": deep_link}
+    return {"qr_code": qr_image_url, "qr_string": qr_str, "deep_link": deep_link}
 
 class HealthResponse(BaseModel):
     ollama: str
