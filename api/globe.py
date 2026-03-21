@@ -575,6 +575,64 @@ async def list_pipeline_runs(pipeline_id: Optional[str] = None, limit: int = 20)
 # Dashboard
 # =====================
 
+# =====================
+# Seed Data
+# =====================
+
+@router.post("/seed")
+async def seed_provinces():
+    """Seed provinces from Industry x Region x Tier combinations"""
+    try:
+        conn = psycopg2.connect(**DB_CONFIG)
+        cursor = conn.cursor()
+
+        # Check if provinces already exist
+        cursor.execute("SELECT COUNT(*) FROM globe_provinces")
+        existing = cursor.fetchone()[0]
+        if existing > 0:
+            cursor.close()
+            conn.close()
+            return {"message": f"Provinces already seeded ({existing} existing)", "seeded": 0}
+
+        # Get all active industries, regions, tiers
+        cursor.execute("SELECT id, code, name, color FROM globe_industries WHERE is_active = true")
+        industries = cursor.fetchall()
+        cursor.execute("SELECT id, code, name, latitude, longitude FROM globe_regions WHERE is_active = true")
+        regions = cursor.fetchall()
+        cursor.execute("SELECT id, code, name FROM globe_tiers ORDER BY min_employees")
+        tiers = cursor.fetchall()
+
+        seeded = 0
+        for ind in industries:
+            for reg in regions:
+                for tier in tiers:
+                    # Calculate node size based on tier
+                    size_map = {"startup": "small", "sme": "medium", "enterprise": "large"}
+                    node_size = size_map.get(tier[1], "medium")
+
+                    # Province name: "Fintech - Northern Vietnam - Startup"
+                    name = f"{ind[2]} - {reg[2]} - {tier[2]}"
+                    name_vi = f"{ind[2]} - {reg[2]} - {tier[2]}"
+                    desc = f"{ind[2]} {reg[2]} market for {tier[2]} companies"
+
+                    cursor.execute("""
+                        INSERT INTO globe_provinces
+                        (name, name_vi, description, industry_id, region_id, tier_id, node_size, node_color,
+                         total_companies, total_revenue, total_leads)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """, (name, name_vi, desc, ind[0], reg[0], tier[0], node_size, ind[3],
+                          0, 0, 0))
+                    seeded += 1
+
+        conn.commit()
+        cursor.close()
+        conn.close()
+        return {"message": f"Seeded {seeded} provinces", "seeded": seeded,
+                "combinations": f"{len(industries)} industries × {len(regions)} regions × {len(tiers)} tiers"}
+    except Exception as e:
+        return {"error": str(e)}
+
+
 @router.get("/dashboard")
 async def get_globe_dashboard():
     """Globe overview dashboard"""
