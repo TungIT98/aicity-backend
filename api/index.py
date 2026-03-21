@@ -15,10 +15,6 @@ from pydantic import BaseModel
 from typing import Optional, List
 import psycopg2
 
-# Import Globe data layer router
-from globe import router as globe_router
-app.include_router(globe_router)
-
 # Get environment variables
 DB_CONFIG = {
     "host": os.getenv("DB_HOST", "localhost"),
