@@ -1,0 +1,24 @@
+services:
+  - type: web
+    name: aicity-api
+    env: python
+    pythonVersion: "3.11"
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT --workers 4
+    healthCheckPath: /health
+    plan: free
+    autoDeploy: true
+    repo: https://github.com/TungIT98/aicity-backend
+    regions:
+      - singapore
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true
+      - key: QDRANT_URL
+        value: http://qdrant:6333
+      - key: OLLAMA_BASE_URL
+        value: http://ollama:11434
+      - key: FRONTEND_URL
+        value: https://dist-psi-five-36.vercel.app
