@@ -362,3 +362,251 @@ async def payments_webhook(request: Request):
         raise HTTPException(status_code=500, detail="Stripe not installed")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============== Globe AI City Data Layer ==============
+
+from typing import Optional
+
+class ProvinceResponse(BaseModel):
+    id: str
+    name: str
+    name_vi: Optional[str]
+    industry: Optional[dict]
+    region: Optional[dict]
+    tier: Optional[dict]
+    total_companies: int
+    total_revenue: float
+    node_size: str
+    node_color: str
+    is_active: bool
+
+
+@app.get("/globe/industries")
+async def globe_industries():
+    """List Globe industries"""
+    try:
+        conn = psycopg2.connect(**DB_CONFIG)
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, code, name, name_vi, icon, color, description FROM globe_industries WHERE is_active = true ORDER BY name")
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        return [{"id": str(r[0]), "code": r[1], "name": r[2], "name_vi": r[3], "icon": r[4], "color": r[5], "description": r[6]} for r in rows]
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/globe/regions")
+async def globe_regions():
+    """List Globe regions"""
+    try:
+        conn = psycopg2.connect(**DB_CONFIG)
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, code, name, name_vi, country, latitude, longitude, timezone FROM globe_regions WHERE is_active = true ORDER BY country, name")
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        return [{"id": str(r[0]), "code": r[1], "name": r[2], "name_vi": r[3], "country": r[4],
+                 "latitude": float(r[5]) if r[5] else None, "longitude": float(r[6]) if r[6] else None, "timezone": r[7]} for r in rows]
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/globe/tiers")
+async def globe_tiers():
+    """List Globe tiers"""
+    try:
+        conn = psycopg2.connect(**DB_CONFIG)
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, code, name, name_vi, description, min_employees, max_employees FROM globe_tiers ORDER BY min_employees")
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        return [{"id": str(r[0]), "code": r[1], "name": r[2], "name_vi": r[3], "description": r[4],
+                 "min_employees": r[5], "max_employees": r[6]} for r in rows]
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/globe/provinces")
+async def globe_provinces(industry_id: Optional[str] = None, region_id: Optional[str] = None, tier_id: Optional[str] = None, limit: int = 100):
+    """List Globe provinces"""
+    try:
+        conn = psycopg2.connect(**DB_CONFIG)
+        cursor = conn.cursor()
+        query = """
+            SELECT p.id, p.name, p.name_vi, p.description, p.industry_id, p.region_id, p.tier_id,
+                   p.node_size, p.node_color, p.total_companies, p.total_revenue, p.total_leads, p.is_active,
+                   i.name as industry_name, r.name as region_name, r.latitude, r.longitude, t.name as tier_name
+            FROM globe_provinces p
+            LEFT JOIN globe_industries i ON p.industry_id = i.id
+            LEFT JOIN globe_regions r ON p.region_id = r.id
+            LEFT JOIN globe_tiers t ON p.tier_id = t.id
+            WHERE p.is_active = true
+        """
+        params = []
+        if industry_id:
+            query += " AND p.industry_id = %s"
+            params.append(industry_id)
+        if region_id:
+            query += " AND p.region_id = %s"
+            params.append(region_id)
+        if tier_id:
+            query += " AND p.tier_id = %s"
+            params.append(tier_id)
+        query += " ORDER BY p.total_companies DESC LIMIT %s"
+        params.append(limit)
+        cursor.execute(query, params)
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        return [{
+            "id": str(r[0]), "name": r[1], "name_vi": r[2], "description": r[3],
+            "industry_id": str(r[4]) if r[4] else None, "region_id": str(r[5]) if r[5] else None, "tier_id": str(r[6]) if r[6] else None,
+            "node_size": r[7], "node_color": r[8], "total_companies": r[9] or 0, "total_revenue": float(r[10] or 0),
+            "total_leads": r[11] or 0, "is_active": r[12],
+            "industry": {"name": r[13]} if r[13] else None,
+            "region": {"name": r[14], "latitude": float(r[15]) if r[15] else None, "longitude": float(r[16]) if r[16] else None} if r[14] else None,
+            "tier": {"name": r[17]} if r[17] else None,
+        } for r in rows]
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/globe/provinces/stats")
+async def globe_province_stats():
+    """Get province statistics"""
+    try:
+        conn = psycopg2.connect(**DB_CONFIG)
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*), SUM(total_companies), SUM(total_revenue), SUM(total_leads) FROM globe_provinces WHERE is_active = true")
+        row = cursor.fetchone()
+        cursor.execute("""
+            SELECT i.name, COUNT(p.id), COALESCE(SUM(p.total_companies), 0)
+            FROM globe_industries i LEFT JOIN globe_provinces p ON p.industry_id = i.id AND p.is_active = true
+            GROUP BY i.id, i.name ORDER BY SUM(p.total_companies) DESC NULLS LAST
+        """)
+        by_industry = [{"name": r[0], "province_count": r[1], "companies": int(r[2])} for r in cursor.fetchall()]
+        cursor.execute("""
+            SELECT r.name, COUNT(p.id), COALESCE(SUM(p.total_companies), 0)
+            FROM globe_regions r LEFT JOIN globe_provinces p ON p.region_id = r.id AND p.is_active = true
+            GROUP BY r.id, r.name ORDER BY SUM(p.total_companies) DESC NULLS LAST
+        """)
+        by_region = [{"name": r[0], "province_count": r[1], "companies": int(r[2])} for r in cursor.fetchall()]
+        cursor.close()
+        conn.close()
+        return {"total_provinces": row[0] or 0, "total_companies": row[1] or 0,
+                "total_revenue": float(row[2] or 0), "total_leads": row[3] or 0,
+                "by_industry": by_industry, "by_region": by_region}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/globe/chains")
+async def globe_chains():
+    """List production chains"""
+    try:
+        conn = psycopg2.connect(**DB_CONFIG)
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, chain_code, name, name_vi, description, stages FROM globe_chains WHERE is_active = true")
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        return [{"id": str(r[0]), "chain_code": r[1], "name": r[2], "name_vi": r[3],
+                 "description": r[4], "stages": r[5] if isinstance(r[5], list) else []} for r in rows]
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/globe/chains/pipeline")
+async def globe_pipeline_stats():
+    """Get pipeline funnel statistics"""
+    try:
+        conn = psycopg2.connect(**DB_CONFIG)
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT current_stage, COUNT(*), COALESCE(SUM(pipeline_value), 0), COALESCE(AVG(probability), 0)
+            FROM globe_chain_instances GROUP BY current_stage ORDER BY MIN(stage_order)
+        """)
+        rows = cursor.fetchall()
+        cursor.execute("SELECT COUNT(*), COALESCE(SUM(actual_value), 0) FROM globe_chain_instances")
+        totals = cursor.fetchone()
+        cursor.close()
+        conn.close()
+        return {"by_stage": [{"stage": r[0], "count": r[1], "total_value": float(r[2]),
+                              "avg_probability": float(r[3])} for r in rows],
+                "totals": {"total_instances": totals[0] or 0, "realized_value": float(totals[1] or 0)}}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/globe/discovery/tree")
+async def globe_discovery_tree(category: Optional[str] = None):
+    """Get discovery tree"""
+    try:
+        conn = psycopg2.connect(**DB_CONFIG)
+        cursor = conn.cursor()
+        query = """
+            SELECT id, node_code, category, parent_code, name, name_vi, description, node_type, keywords, icon, color, selection_count
+            FROM globe_discovery_nodes WHERE is_active = true
+        """
+        params = []
+        if category:
+            query += " AND category = %s"
+            params.append(category)
+        query += " ORDER BY category, parent_code NULLS FIRST, node_type, name"
+        cursor.execute(query, params)
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        nodes = {str(r[0]): {"id": str(r[0]), "node_code": r[1], "category": r[2], "parent_code": r[3],
+                              "name": r[4], "name_vi": r[5], "description": r[6], "node_type": r[7],
+                              "keywords": r[8] if isinstance(r[8], list) else [], "icon": r[9],
+                              "color": r[10], "selection_count": r[11] or 0, "children": []} for r in rows}
+        tree = []
+        for node in nodes.values():
+            if node["parent_code"]:
+                parent = next((n for n in nodes.values() if n["node_code"] == node["parent_code"]), None)
+                if parent:
+                    parent["children"].append(node)
+            else:
+                tree.append(node)
+        return {"categories": tree} if not category else tree
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/globe/dashboard")
+async def globe_dashboard():
+    """Globe overview dashboard"""
+    try:
+        conn = psycopg2.connect(**DB_CONFIG)
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM globe_industries WHERE is_active = true")
+        ind_count = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) FROM globe_regions WHERE is_active = true")
+        reg_count = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) FROM globe_discovery_nodes WHERE is_active = true")
+        node_count = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) FROM globe_pipelines WHERE is_active = true")
+        pipe_count = cursor.fetchone()[0]
+        cursor.close()
+        conn.close()
+        return {"status": "operational", "counts": {"industries": ind_count, "regions": reg_count,
+                "discovery_nodes": node_count, "pipelines": pipe_count}}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/globe/status")
+async def globe_status():
+    """Globe data layer status"""
+    return {
+        "status": "operational",
+        "endpoints": ["/globe/industries", "/globe/regions", "/globe/tiers",
+                      "/globe/provinces", "/globe/chains", "/globe/chains/pipeline",
+                      "/globe/discovery/tree", "/globe/dashboard"],
+        "note": "Schema migration (globe_schema.sql) needed to enable full functionality"
+    }
+
