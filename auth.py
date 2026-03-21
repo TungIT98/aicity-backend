@@ -26,13 +26,27 @@ router = APIRouter(prefix="/api/auth", tags=["Auth"])
 security = HTTPBearer(auto_error=False)
 
 # Database configuration
-DB_CONFIG = {
-    "host": os.getenv("DB_HOST", "localhost"),
-    "port": int(os.getenv("DB_PORT", "5433")),
-    "database": os.getenv("DB_NAME", "promptforge"),
-    "user": os.getenv("DB_USER", "promptforge"),
-    "password": os.getenv("DB_PASSWORD", "promptforge123"),
-}
+def _get_db_config():
+    db_url = os.getenv("DATABASE_URL")
+    if db_url:
+        import urllib.parse
+        parsed = urllib.parse.urlparse(db_url)
+        return {
+            "host": parsed.hostname or "localhost",
+            "port": parsed.port or 5432,
+            "database": parsed.path.lstrip("/") or "neondb",
+            "user": parsed.username or "neondb_owner",
+            "password": parsed.password or "",
+        }
+    return {
+        "host": os.getenv("DB_HOST", "localhost"),
+        "port": int(os.getenv("DB_PORT", "5433")),
+        "database": os.getenv("DB_NAME", "promptforge"),
+        "user": os.getenv("DB_USER", "promptforge"),
+        "password": os.getenv("DB_PASSWORD", "promptforge123"),
+    }
+
+DB_CONFIG = _get_db_config()
 
 # JWT Configuration
 SECRET_KEY = os.getenv("SECRET_KEY", "aicity_secret_key_change_in_production_2024")
@@ -80,7 +94,7 @@ class TokenResponse(BaseModel):
 
 class UserResponse(BaseModel):
     """User data in response"""
-    id: int
+    id: str
     email: str
     name: str
     role: str
@@ -101,7 +115,7 @@ class PasswordChange(BaseModel):
 
 class TokenData(BaseModel):
     """Decoded token payload"""
-    user_id: int
+    user_id: str
     email: str
     role: str
     exp: int
@@ -213,26 +227,38 @@ def get_db_conn():
 
 
 def create_users_table():
-    """Create users table if not exists"""
+    """Create/migrate users table - adds auth columns if they don't exist"""
     conn = get_db_conn()
     if not conn:
         return
     try:
         cursor = conn.cursor()
+        # Create table if not exists (for new DBs)
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS users (
-                id SERIAL PRIMARY KEY,
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 email VARCHAR(255) UNIQUE NOT NULL,
-                password_hash VARCHAR(255) NOT NULL,
+                password_hash VARCHAR(255),
                 name VARCHAR(255) NOT NULL,
                 role VARCHAR(50) DEFAULT 'user',
                 phone VARCHAR(50),
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                created_at TIMESTAMP DEFAULT NOW(),
+                updated_at TIMESTAMP DEFAULT NOW(),
                 last_login TIMESTAMP,
                 is_active BOOLEAN DEFAULT TRUE
             )
         """)
+        # Add missing columns for existing tables with old schema
+        for col_def in [
+            ("password_hash", "VARCHAR(255)"),
+            ("phone", "VARCHAR(50)"),
+            ("last_login", "TIMESTAMP"),
+            ("is_active", "BOOLEAN DEFAULT TRUE"),
+        ]:
+            try:
+                cursor.execute(f"ALTER TABLE users ADD COLUMN IF NOT EXISTS {col_def[0]} {col_def[1]}")
+            except Exception:
+                pass
         conn.commit()
         cursor.close()
     except Exception:
@@ -337,15 +363,16 @@ async def register(user: UserRegister):
         conn.commit()
 
         # Generate tokens
-        access_token = create_token(user_id, user.email, user.role, "access")
-        refresh_token = create_token(user_id, user.email, user.role, "refresh")
+        user_id_str = str(user_id)
+        access_token = create_token(user_id_str, user.email, user.role, "access")
+        refresh_token = create_token(user_id_str, user.email, user.role, "refresh")
 
         return TokenResponse(
             access_token=access_token,
             refresh_token=refresh_token,
             expires_in=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
             user=UserResponse(
-                id=user_id,
+                id=str(user_id),
                 email=user.email,
                 name=user.name,
                 role=user.role,
@@ -394,6 +421,7 @@ async def login(user: UserLogin):
             raise HTTPException(status_code=401, detail="Invalid email or password")
 
         user_id, email, password_hash, name, role, created_at, last_login, is_active = row
+        user_id = str(user_id)
 
         if not is_active:
             raise HTTPException(status_code=401, detail="Account is deactivated")
@@ -409,15 +437,16 @@ async def login(user: UserLogin):
         conn.commit()
 
         # Generate tokens
-        access_token = create_token(user_id, email, role, "access")
-        refresh_token = create_token(user_id, email, role, "refresh")
+        user_id_str = str(user_id)
+        access_token = create_token(user_id_str, email, role, "access")
+        refresh_token = create_token(user_id_str, email, role, "refresh")
 
         return TokenResponse(
             access_token=access_token,
             refresh_token=refresh_token,
             expires_in=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
             user=UserResponse(
-                id=user_id,
+                id=str(user_id),
                 email=email,
                 name=name,
                 role=role,
@@ -505,7 +534,7 @@ async def get_me(current_user: TokenData = Depends(get_current_user)):
 
         id_, email, name, role, created_at, last_login = row
         return UserResponse(
-            id=id_,
+            id=str(id_),
             email=email,
             name=name,
             role=role,

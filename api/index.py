@@ -15,14 +15,31 @@ from pydantic import BaseModel
 from typing import Optional, List
 import psycopg2
 
+# Import auth router
+from auth import router as auth_router
+
 # Get environment variables
-DB_CONFIG = {
-    "host": os.getenv("DB_HOST", "localhost"),
-    "port": int(os.getenv("DB_PORT", 5432)),
-    "database": os.getenv("DB_NAME", "neondb"),
-    "user": os.getenv("DB_USER", "neondb_owner"),
-    "password": os.getenv("DB_PASSWORD", ""),
-}
+def _get_db_config():
+    db_url = os.getenv("DATABASE_URL")
+    if db_url:
+        import urllib.parse
+        parsed = urllib.parse.urlparse(db_url)
+        return {
+            "host": parsed.hostname or "localhost",
+            "port": parsed.port or 5432,
+            "database": parsed.path.lstrip("/") or "neondb",
+            "user": parsed.username or "neondb_owner",
+            "password": parsed.password or "",
+        }
+    return {
+        "host": os.getenv("DB_HOST", "localhost"),
+        "port": int(os.getenv("DB_PORT", 5432)),
+        "database": os.getenv("DB_NAME", "neondb"),
+        "user": os.getenv("DB_USER", "neondb_owner"),
+        "password": os.getenv("DB_PASSWORD", ""),
+    }
+
+DB_CONFIG = _get_db_config()
 
 # Stripe config
 STRIPE_ENABLED = os.getenv("STRIPE_ENABLED", "false").lower() == "true"
@@ -45,6 +62,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Include auth router
+app.include_router(auth_router)
 
 # Pricing plans (VND)
 PRICING_PLANS = {
