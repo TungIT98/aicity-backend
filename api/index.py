@@ -311,7 +311,7 @@ async def payments_checkout(req: CheckoutRequest):
 
     elif method == "vietqr":
         qr_data = generate_vietqr_data(amount, purpose)
-        payment_id = f"AIC-{datetime.now().strftime('%Y%m%d%H%M%S')}"
+        payment_id = f"AIC-{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}"
         return {
             "payment_id": payment_id,
             "payment_method": "vietqr",
