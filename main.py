@@ -908,6 +908,10 @@ app.include_router(revenue_api_router)
 from ceo_dashboard import router as ceo_dashboard_router
 app.include_router(ceo_dashboard_router)
 
+# Import Analytics router (Telesales, Conversion Funnel, ROI)
+from analytics import router as analytics_router
+app.include_router(analytics_router)
+
 # Import tracking module
 import tracking
 from tracking import (
@@ -1144,34 +1148,41 @@ async def get_dashboard_analytics(period: str = "week"):
             except:
                 pass
 
-        # Get leads data
+        # Get leads data - OPTIMIZED: Combined single query instead of 3 sequential
         conn = psycopg2.connect(**DB_CONFIG)
         cursor = conn.cursor()
 
-        # Leads by source
+        # Single combined query for leads analytics
         cursor.execute("""
-            SELECT source, COUNT(*) as total,
-                   SUM(CASE WHEN status = 'converted' THEN 1 ELSE 0 END) as converted
-            FROM leads
-            GROUP BY source
+            WITH leads_summary AS (
+                SELECT source, status,
+                       COUNT(*) as total,
+                       SUM(CASE WHEN status = 'converted' THEN 1 ELSE 0 END) as converted
+                FROM leads
+                GROUP BY source, status
+            ),
+            status_summary AS (
+                SELECT status, COUNT(*) as count
+                FROM leads
+                GROUP BY status
+            ),
+            revenue_summary AS (
+                SELECT COALESCE(SUM(CAST(metadata->>'revenue' AS numeric)), 0) as total
+                FROM leads WHERE status = 'converted'
+            )
+            SELECT
+                json_agg(json_build_object('source', source, 'total', total, 'converted', converted,
+                    'rate', CASE WHEN total > 0 THEN ROUND(converted::numeric/total*100, 2) ELSE 0 END)
+                    ORDER BY total DESC) as leads_by_source,
+                (SELECT json_object_agg(status, count) FROM status_summary) as leads_by_status,
+                (SELECT total FROM revenue_summary) as total_revenue
+            FROM leads_summary
+            WHERE converted > 0 OR total > 0
         """)
-        leads_by_source = [
-            {"source": r[0], "total": r[1], "converted": r[2], "rate": round(r[2]/r[1]*100, 2) if r[1] > 0 else 0}
-            for r in cursor.fetchall()
-        ]
-
-        # Leads by status
-        cursor.execute("""
-            SELECT status, COUNT(*) FROM leads GROUP BY status
-        """)
-        leads_by_status = {r[0]: r[1] for r in cursor.fetchall()}
-
-        # Revenue from converted leads
-        cursor.execute("""
-            SELECT COALESCE(SUM(CAST(metadata->>'revenue' AS numeric)), 0)
-            FROM leads WHERE status = 'converted'
-        """)
-        total_revenue = cursor.fetchone()[0] or 0
+        result = cursor.fetchone()
+        leads_by_source = result[0] if result and result[0] else []
+        leads_by_status = result[1] if result and result[1] else {}
+        total_revenue = result[2] if result and result[2] else 0
 
         cursor.close()
         conn.close()
