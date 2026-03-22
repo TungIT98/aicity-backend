@@ -876,17 +876,26 @@ async def create_demo_booking(booking: DemoBookingRequest):
         cursor.close()
         conn.close()
 
+        # Sanitize user inputs to prevent email header injection (OWASP)
+        def sanitize_for_email(value: str) -> str:
+            if not value:
+                return ""
+            return value.replace("\r", "").replace("\n", "")[:200]
+
+        safe_name = sanitize_for_email(booking.name or "")
+        safe_company = sanitize_for_email(booking.company or "")
+
         # Send email notification via Resend
         if RESEND_API_KEY:
             try:
                 email_body = f"""New Demo Booking Request
 
-Name: {booking.name}
-Company: {booking.company}
+Name: {safe_name}
+Company: {safe_company}
 Email: {booking.email}
 Phone: {booking.phone}
 Employees: {booking.employees or "N/A"}
-Message: {booking.message or "N/A"}
+Message: {(booking.message or "").replace("\r", "").replace("\n", " ")[:500]}
 Submitted: {booking.timestamp or "N/A"}
 
 ---
@@ -901,7 +910,7 @@ AI City Backend - Lead ID: {lead_id}
                     json={
                         "from": "AI City <onboarding@resend.dev>",
                         "to": DEMO_SALES_EMAIL,
-                        "subject": f"New Demo Booking: {booking.name} from {booking.company}",
+                        "subject": f"New Demo Booking: {safe_name} from {safe_company}",
                         "text": email_body,
                     },
                     timeout=10,

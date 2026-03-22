@@ -46,3 +46,5 @@ storage/
 
 # Node (for n8n workflow files)
 node_modules/
+.vercel
+.env*.local

@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "AI City API",
-    "description": "\n## AI City Backend API\n\nAI City is an AI Agent Platform for Vietnamese SMEs.\n\n### Features\n- \ud83d\udd10 **Authentication** - JWT-based user authentication\n- \ud83d\udcca **Analytics** - Real-time analytics with Matomo integration\n- \ud83c\udfaf **Lead Management** - CRM with conversion tracking\n- \ud83d\udcb3 **Billing & Invoices** - Vietnamese e-invoice support\n- \ud83d\udcc8 **Revenue Tracking** - Subscription and payment tracking\n- \ud83d\udd0d **RAG Search** - Semantic search with Ollama + Qdrant\n\n### Authentication\nAll protected endpoints require a Bearer token in the Authorization header:\n```\nAuthorization: Bearer <your_token>\n```\n\n### Rate Limits\n- Default: 1000 requests/minute per user\n- Search: 100 requests/minute\n\n### Support\n- Email: support@aicity.vn\n- API Version: 1.0.0\n    ",
+    "description": "\n## AI City Backend API\n\nAI City is an AI Agent Platform for Vietnamese SMEs.\n\n### Features\n- [Auth] JWT-based user authentication\n- [Analytics] Real-time analytics with Matomo integration\n- [Leads] CRM lead management and conversion tracking\n- [Invoices] Vietnamese e-invoice support\n- [Revenue] Subscription and payment tracking\n- [Search] RAG-powered semantic search\n\n### API Versions\n| Version | Base URL | Status |\n|---------|----------|--------|\n| v1 | `/v1/` | Stable |\n| Unversioned | `/` | Stable (backward compatible) |\n\nSee API_VERSIONING.md for versioning strategy details.\n\n### Authentication\nAll protected endpoints require a Bearer token:\n```\nAuthorization: Bearer <your_token>\n```\n\n### Rate Limits\n| Tier | Requests | Window |\n|------|----------|--------|\n| Default | 1000 | 1 minute |\n| Auth | 20 | 1 minute |\n| Search | 100 | 1 minute |\n| Write | 200 | 1 minute |\n\nResponse headers on every request:\n- X-RateLimit-Limit - Max requests allowed\n- X-RateLimit-Remaining - Remaining requests in window\n- X-RateLimit-Reset - Unix timestamp when limit resets\n\n### Error Response Format\nAll errors follow a consistent format:\n```json\n{\n  \"error\": {\n    \"code\": 400,\n    \"message\": \"Bad Request - Invalid input\",\n    \"type\": \"ValidationError\"\n  },\n  \"request_id\": \"abc-123\"\n}\n```\n\n### Error Codes\n| Code | Type | Description |\n|------|------|-------------|\n| 400 | ValidationError | Invalid request parameters |\n| 401 | AuthenticationError | Missing or invalid Bearer token |\n| 403 | ForbiddenError | Insufficient permissions |\n| 404 | NotFoundError | Resource not found |\n| 409 | ConflictError | Resource already exists |\n| 422 | UnprocessableEntity | Request body validation failed |\n| 429 | TooManyRequests | Rate limit exceeded |\n| 500 | InternalServerError | Unexpected server error |\n| 503 | ServiceUnavailable | Downstream service unavailable |\n\n### Support\nEmail: support@aicity.vn\n\nAPI Version: 1.0.0\n",
     "contact": {
       "name": "AI City Support",
       "url": "https://aicity.vn/",
@@ -3551,7 +3551,7 @@
           "unit": {
             "type": "string",
             "title": "Unit",
-            "default": "l\u1ea7n"
+            "default": "lần"
           },
           "unit_price": {
             "type": "number",
@@ -4880,6 +4880,67 @@
           "type"
         ],
         "title": "ValidationError"
+      },
+      "APIError": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "object",
+            "properties": {
+              "code": {
+                "type": "integer",
+                "description": "HTTP status code"
+              },
+              "message": {
+                "type": "string",
+                "description": "Human-readable error message"
+              },
+              "type": {
+                "type": "string",
+                "description": "Error type classification"
+              }
+            },
+            "required": [
+              "code",
+              "message",
+              "type"
+            ]
+          },
+          "request_id": {
+            "type": "string",
+            "nullable": true,
+            "description": "Request tracking ID"
+          }
+        },
+        "required": [
+          "error"
+        ]
+      },
+      "RateLimitError": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "string",
+            "example": "Too Many Requests"
+          },
+          "message": {
+            "type": "string",
+            "example": "Rate limit exceeded. Try again in 45 seconds."
+          },
+          "limit": {
+            "type": "integer",
+            "example": 1000
+          },
+          "window_seconds": {
+            "type": "integer",
+            "example": 60
+          },
+          "reset_at": {
+            "type": "integer",
+            "description": "Unix timestamp when rate limit resets",
+            "example": 1742614800
+          }
+        }
       }
     },
     "securitySchemes": {
