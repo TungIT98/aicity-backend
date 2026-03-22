@@ -33,6 +33,13 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 # Import auth router
 from auth import router as auth_router
 
+# Import rate limiting
+try:
+    from rate_limit import RateLimitMiddleware
+    HAS_RATE_LIMIT = True
+except ImportError:
+    HAS_RATE_LIMIT = False
+
 # Get environment variables
 def _get_db_config():
     db_url = os.getenv("DATABASE_URL")
@@ -84,6 +91,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Add rate limiting middleware
+if HAS_RATE_LIMIT:
+    app.add_middleware(RateLimitMiddleware)
 
 # Include auth router
 app.include_router(auth_router)
@@ -377,7 +388,7 @@ async def get_leads(limit: int = 50):
         return {"error": str(e)}
 
 @app.get("/analytics/overview")
-async def analytics_overview():
+async def analytics_overview(current_user: dict = Depends(get_current_user)):
     try:
         conn = get_psycopg2().connect(**DB_CONFIG)
         cur = conn.cursor()
