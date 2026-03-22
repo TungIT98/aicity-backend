@@ -1060,17 +1060,26 @@ async def create_demo_booking(booking: DemoBookingRequest):
         cursor.close()
         conn.close()
 
+        # Sanitize user inputs to prevent email header injection (OWASP)
+        def sanitize_for_email(value: str) -> str:
+            if not value:
+                return ""
+            return value.replace("\r", "").replace("\n", "")[:200]
+
+        safe_name = sanitize_for_email(booking.name or "")
+        safe_company = sanitize_for_email(booking.company or "")
+
         # Send email notification via Resend
         if RESEND_API_KEY:
             try:
                 email_body = f"""New Demo Booking Request
 
-Name: {booking.name}
-Company: {booking.company}
+Name: {safe_name}
+Company: {safe_company}
 Email: {booking.email}
 Phone: {booking.phone}
 Employees: {booking.employees or "N/A"}
-Message: {booking.message or "N/A"}
+Message: {(booking.message or "").replace("\r", "").replace("\n", " ")[:500]}
 Submitted: {booking.timestamp or "N/A"}
 
 ---
@@ -1085,7 +1094,7 @@ AI City Backend - Lead ID: {lead_id}
                     json={
                         "from": "AI City <onboarding@resend.dev>",
                         "to": DEMO_SALES_EMAIL,
-                        "subject": f"New Demo Booking: {booking.name} from {booking.company}",
+                        "subject": f"New Demo Booking: {safe_name} from {safe_company}",
                         "text": email_body,
                     },
                     timeout=10,
@@ -1102,4 +1111,191 @@ AI City Backend - Lead ID: {lead_id}
         }
     except Exception as e:
         return {"success": False, "error": str(e)}
+
+
+# =============================================================================
+# Agents endpoints (Paperclip API integration)
+# =============================================================================
+
+PAPERCLIP_API_URL = os.getenv("PAPERCLIP_API_URL", "https://api.paperclip.ai")
+
+
+@app.get("/agents")
+async def get_agents():
+    """Get all agents from Paperclip."""
+    try:
+        paperclip_key = os.getenv("PAPERCLIP_API_KEY")
+        if not paperclip_key:
+            return {"error": "Paperclip API not configured", "agents": []}
+
+        resp = requests.get(
+            f"{PAPERCLIP_API_URL}/api/companies/{DB_CONFIG.get('company_id', os.getenv('COMPANY_ID', ''))}/agents",
+            headers={
+                "Authorization": f"Bearer {paperclip_key}",
+                "Content-Type": "application/json",
+            },
+            timeout=10,
+        )
+
+        if resp.status_code == 200:
+            return {"agents": resp.json()}
+        return {"error": f"Paperclip API error: {resp.status_code}", "agents": []}
+    except Exception as e:
+        return {"error": str(e), "agents": []}
+
+
+@app.get("/agents/usage")
+async def get_agent_usage():
+    """Get agent usage statistics from Paperclip."""
+    try:
+        paperclip_key = os.getenv("PAPERCLIP_API_KEY")
+        company_id = os.getenv("COMPANY_ID", "")
+
+        if not paperclip_key or not company_id:
+            return {
+                "total_runs": 0,
+                "total_tokens": 0,
+                "active_agents": 0,
+                "note": "Paperclip API not configured"
+            }
+
+        # Get agents
+        agents_resp = requests.get(
+            f"{PAPERCLIP_API_URL}/api/companies/{company_id}/agents",
+            headers={"Authorization": f"Bearer {paperclip_key}", "Content-Type": "application/json"},
+            timeout=10,
+        )
+
+        if agents_resp.status_code != 200:
+            return {"error": f"Failed to fetch agents: {agents_resp.status_code}"}
+
+        agents = agents_resp.json()
+        active_agents = [a for a in agents if a.get("status") == "running"]
+
+        # Get dashboard/run stats
+        dash_resp = requests.get(
+            f"{PAPERCLIP_API_URL}/api/companies/{company_id}/dashboard",
+            headers={"Authorization": f"Bearer {paperclip_key}", "Content-Type": "application/json"},
+            timeout=10,
+        )
+
+        dashboard = dash_resp.json() if dash_resp.status_code == 200 else {}
+
+        return {
+            "total_agents": len(agents),
+            "active_agents": len(active_agents),
+            "total_runs": dashboard.get("total_runs", 0),
+            "runs_today": dashboard.get("runs_today", 0),
+            "runs_this_week": dashboard.get("runs_this_week", 0),
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+# =============================================================================
+# Analytics endpoints
+# =============================================================================
+
+@app.get("/analytics/conversions")
+async def get_conversion_metrics():
+    """Get conversion funnel data."""
+    try:
+        conn = get_psycopg2().connect(**DB_CONFIG)
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT
+                COUNT(*) as total,
+                SUM(CASE WHEN status = 'converted' THEN 1 ELSE 0 END) as converted
+            FROM leads
+        """)
+        result = cursor.fetchone()
+
+        cursor.close()
+        conn.close()
+
+        total = result[0] or 0
+        converted = result[1] or 0
+        rate = (converted / total * 100) if total > 0 else 0
+
+        return {
+            "total_leads": total,
+            "converted": converted,
+            "conversion_rate": round(rate, 2),
+            "period": "all_time"
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/analytics/revenue")
+async def get_revenue_metrics():
+    """Get revenue tracking data."""
+    try:
+        conn = get_psycopg2().connect(**DB_CONFIG)
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT COALESCE(SUM(CAST(metadata->>'revenue' AS numeric)), 0) as total
+            FROM leads
+            WHERE status = 'converted'
+        """)
+        result = cursor.fetchone()
+
+        # Get subscription revenue
+        cursor.execute("""
+            SELECT COALESCE(SUM(amount), 0) as total
+            FROM subscriptions
+            WHERE status = 'active'
+        """)
+        sub_result = cursor.fetchone()
+
+        cursor.close()
+        conn.close()
+
+        return {
+            "lead_revenue": float(result[0] or 0),
+            "subscription_revenue": float(sub_result[0] or 0),
+            "total_revenue": float(result[0] or 0) + float(sub_result[0] or 0),
+            "period": "all_time"
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/leads/analytics/conversion")
+async def get_lead_analytics():
+    """Get lead conversion analytics by source and status."""
+    try:
+        conn = get_psycopg2().connect(**DB_CONFIG)
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT source,
+                   COUNT(*) as total,
+                   SUM(CASE WHEN status = 'converted' THEN 1 ELSE 0 END) as converted
+            FROM leads
+            GROUP BY source
+        """)
+        by_source = [
+            {"source": r[0], "total": r[1], "converted": r[2], "rate": round(r[2]/r[1]*100, 2) if r[1] > 0 else 0}
+            for r in cursor.fetchall()
+        ]
+
+        cursor.execute("""
+            SELECT status, COUNT(*) as count
+            FROM leads
+            GROUP BY status
+        """)
+        by_status = [{"status": r[0], "count": r[1]} for r in cursor.fetchall()]
+
+        cursor.close()
+        conn.close()
+
+        return {
+            "by_source": by_source,
+            "by_status": by_status
+        }
+    except Exception as e:
+        return {"error": str(e)}
 
