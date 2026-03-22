@@ -1023,12 +1023,12 @@ async def create_demo_booking(booking: DemoBookingRequest):
         conn = get_psycopg2().connect(**DB_CONFIG)
         cursor = conn.cursor()
 
-        metadata = {
+        metadata = json.dumps({
             "company": booking.company,
             "employees": booking.employees,
             "message": booking.message,
             "timestamp": booking.timestamp,
-        }
+        })
 
         cursor.execute("""
             INSERT INTO leads (name, email, phone, source, status, metadata, created_at, updated_at)
@@ -1040,7 +1040,7 @@ async def create_demo_booking(booking: DemoBookingRequest):
             booking.phone,
             "demo_booking",
             "new",
-            str(metadata),
+            metadata,
         ))
 
         result = cursor.fetchone()
