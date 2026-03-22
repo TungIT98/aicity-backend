@@ -162,7 +162,7 @@ jobs:
       - name: Build and push
         uses: docker/build-push-action@v5
         with:
-          context: ./backend
+          context: .
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           cache-from: type=gha
@@ -189,7 +189,6 @@ jobs:
           vercel-org-id: ${{ secrets.VERCEL_ORG_ID }}
           vercel-project-id: ${{ secrets.VERCEL_STAGING_PROJECT_ID }}
           vercel-args: '--prod=false'
-          working-directory: ./backend
 
       - name: Wait for deployment
         run: sleep 15
@@ -248,7 +247,6 @@ jobs:
           vercel-org-id: ${{ secrets.VERCEL_ORG_ID }}
           vercel-project-id: ${{ secrets.VERCEL_PRODUCTION_PROJECT_ID }}
           vercel-args: '--prod=true'
-          working-directory: ./backend
 
       - name: Wait for deployment and health check
         run: |
@@ -328,7 +326,6 @@ jobs:
           vercel-org-id: ${{ secrets.VERCEL_ORG_ID }}
           vercel-project-id: ${{ secrets.VERCEL_PRODUCTION_PROJECT_ID }}
           vercel-args: '--prod=true'
-          working-directory: ./backend
 
       - name: Alert on rollback
         uses: slackapi/slack-github-action@v1
