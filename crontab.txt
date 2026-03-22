@@ -1,0 +1,20 @@
+# AI City - Cron Jobs Configuration
+# Install with: crontab crontab.txt
+
+# Health checks every 5 minutes
+*/5 * * * * /app/scripts/uptime_monitor.sh >> /var/log/aicity-uptime-cron.log 2>&1
+
+# Deep health check every 15 minutes
+*/15 * * * * /usr/bin/python3 /app/scripts/health_check.py >> /var/log/aicity-health.log 2>&1
+
+# Database backup every 6 hours
+0 */6 * * * /usr/bin/python3 /app/scripts/backup.py --type=db >> /var/log/aicity-backup-db.log 2>&1
+
+# Full backup daily at 2 AM
+0 2 * * * /usr/bin/python3 /app/scripts/backup.py --type=full >> /var/log/aicity-backup-full.log 2>&1
+
+# Verify backups weekly on Sunday at 3 AM
+0 3 * * 0 /usr/bin/python3 /app/scripts/backup.py --verify-only >> /var/log/aicity-backup-verify.log 2>&1
+
+# Self-healing monitor (runs continuously, not via cron)
+# @reboot /usr/bin/python3 /app/scripts/self_heal.py >> /var/log/aicity-selfheal.log 2>&1 &
