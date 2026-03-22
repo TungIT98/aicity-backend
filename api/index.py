@@ -1332,3 +1332,37 @@ async def get_lead_analytics():
     except Exception as e:
         return {"error": str(e)}
 
+
+# =============================================================================
+# /api/ prefixed aliases (AIC-590 - CEO Priority)
+# =============================================================================
+
+@app.get("/api/agents")
+async def api_get_agents():
+    """Get all agents - /api/agents alias."""
+    return await get_agents()
+
+
+@app.get("/api/agents/usage")
+async def api_get_agents_usage():
+    """Get agent usage - /api/agents/usage alias."""
+    return await get_agent_usage()
+
+
+@app.get("/api/analytics/conversions")
+async def api_get_conversions():
+    """Get conversions - /api/analytics/conversions alias."""
+    return await get_conversion_metrics()
+
+
+@app.get("/api/analytics/revenue")
+async def api_get_revenue():
+    """Get revenue - /api/analytics/revenue alias."""
+    return await get_revenue_metrics()
+
+
+@app.get("/api/leads/analytics/conversion")
+async def api_get_lead_analytics():
+    """Get lead analytics - /api/leads/analytics/conversion alias."""
+    return await get_lead_analytics()
+
