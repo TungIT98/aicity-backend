@@ -3,17 +3,32 @@ import sys
 import json
 import datetime
 import urllib.parse
+import hashlib
+import hmac
+import base64
+import time
+import requests
 
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# Lazy psycopg2 import to avoid cold start issues
+psycopg2 = None
+
+def get_psycopg2():
+    global psycopg2
+    if psycopg2 is None:
+        import psycopg2 as _psycopg2
+        psycopg2 = _psycopg2
+    return psycopg2
+
 # Import environment before importing main
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends, status
 from starlette.requests import Request
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, EmailStr, Field
 from typing import Optional, List
-import psycopg2
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 # Import auth router
 from auth import router as auth_router
@@ -40,6 +55,13 @@ def _get_db_config():
     }
 
 DB_CONFIG = _get_db_config()
+
+# Auth / JWT Configuration
+SECRET_KEY = os.getenv("SECRET_KEY", "aicity_secret_key_change_in_production_2024")
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 60
+REFRESH_TOKEN_EXPIRE_DAYS = 30
+security = HTTPBearer(auto_error=False)
 
 # Stripe config
 STRIPE_ENABLED = os.getenv("STRIPE_ENABLED", "false").lower() == "true"
@@ -144,11 +166,176 @@ class HealthResponse(BaseModel):
     qdrant: str
     postgresql: str
 
+
+# ============== Auth Models ==============
+
+class UserRegister(BaseModel):
+    email: EmailStr
+    password: str = Field(..., min_length=8, max_length=128)
+    name: str = Field(..., min_length=1, max_length=100)
+    phone: Optional[str] = None
+    role: str = "user"
+
+
+class UserLogin(BaseModel):
+    email: EmailStr
+    password: str
+
+
+class TokenResponse(BaseModel):
+    access_token: str
+    refresh_token: str
+    token_type: str = "bearer"
+    expires_in: int
+    user: "UserResponse"
+
+
+class UserResponse(BaseModel):
+    id: int | str
+    email: str
+    name: str
+    role: str
+    created_at: Optional[str] = None
+    last_login: Optional[str] = None
+
+
+class TokenRefresh(BaseModel):
+    refresh_token: str
+
+
+class PasswordChange(BaseModel):
+    current_password: str
+    new_password: str = Field(..., min_length=8, max_length=128)
+
+
+# ============== Auth Utilities ==============
+
+def hash_password(password: str) -> str:
+    salt = SECRET_KEY[:16]
+    combined = salt + password + SECRET_KEY
+    return hashlib.sha256(combined.encode()).hexdigest() + ":" + salt
+
+
+def verify_password(password: str, stored_hash: str) -> bool:
+    try:
+        _, salt = stored_hash.split(":")
+        combined = salt + password + SECRET_KEY
+        computed = hashlib.sha256(combined.encode()).hexdigest() + ":" + salt
+        return hmac.compare_digest(computed, stored_hash)
+    except Exception:
+        return False
+
+
+def create_token(user_id: int, email: str, role: str, token_type: str = "access") -> str:
+    now = int(time.time())
+    exp = now + (ACCESS_TOKEN_EXPIRE_MINUTES * 60) if token_type == "access" else now + (REFRESH_TOKEN_EXPIRE_DAYS * 86400)
+    payload = {"user_id": user_id, "email": email, "role": role, "type": token_type, "iat": now, "exp": exp}
+    header = {"alg": ALGORITHM, "typ": "JWT"}
+    header_b64 = base64.urlsafe_b64encode(json.dumps(header).encode()).decode().rstrip("=")
+    payload_b64 = base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=")
+    signature = hmac.new(SECRET_KEY.encode(), f"{header_b64}.{payload_b64}".encode(), hashlib.sha256).digest()
+    signature_b64 = base64.urlsafe_b64encode(signature).decode().rstrip("=")
+    return f"{header_b64}.{payload_b64}.{signature_b64}"
+
+
+def decode_token(token: str) -> dict:
+    try:
+        parts = token.split(".")
+        if len(parts) != 3:
+            raise HTTPException(status_code=401, detail="Invalid token format")
+        header_b64, payload_b64, signature_b64 = parts
+        expected_sig = hmac.new(SECRET_KEY.encode(), f"{header_b64}.{payload_b64}".encode(), hashlib.sha256).digest()
+        expected_sig_b64 = base64.urlsafe_b64encode(expected_sig).decode().rstrip("=")
+        if not hmac.compare_digest(signature_b64, expected_sig_b64):
+            raise HTTPException(status_code=401, detail="Invalid token signature")
+        padding = 4 - len(payload_b64) % 4
+        if padding < 4:
+            payload_b64 += "=" * padding
+        payload = json.loads(base64.urlsafe_b64decode(payload_b64))
+        if payload.get("exp", 0) < int(time.time()):
+            raise HTTPException(status_code=401, detail="Token expired")
+        return payload
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=401, detail=f"Token decode error: {str(e)}")
+
+
+async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)) -> dict:
+    if not credentials:
+        raise HTTPException(status_code=401, detail="Authentication required", headers={"WWW-Authenticate": "Bearer"})
+    token_data = decode_token(credentials.credentials)
+    if token_data.get("type") != "access":
+        raise HTTPException(status_code=401, detail="Invalid token type - access token required")
+    return token_data
+
+
+async def get_current_user_optional(credentials: HTTPAuthorizationCredentials = Depends(security)) -> Optional[dict]:
+    if not credentials:
+        return None
+    try:
+        token_data = decode_token(credentials.credentials)
+        if token_data.get("type") == "access":
+            return token_data
+    except HTTPException:
+        pass
+    return None
+
+
+def get_auth_db_conn():
+    try:
+        return get_psycopg2().connect(**DB_CONFIG)
+    except get_psycopg2().OperationalError:
+        return None
+
+
+def init_users_table():
+    conn = get_auth_db_conn()
+    if not conn:
+        return
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                id SERIAL PRIMARY KEY,
+                email VARCHAR(255) UNIQUE NOT NULL,
+                password_hash VARCHAR(255) NOT NULL,
+                name VARCHAR(255) NOT NULL,
+                role VARCHAR(50) DEFAULT 'user',
+                phone VARCHAR(50),
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                last_login TIMESTAMP,
+                is_active BOOLEAN DEFAULT TRUE
+            )
+        """)
+        conn.commit()
+        cursor.close()
+    except Exception:
+        pass
+    finally:
+        conn.close()
+
+
+# Initialize users table on startup (non-blocking, deferred)
+# init_users_table() is called lazily on first auth endpoint call
+
+
 class CheckoutRequest(BaseModel):
     plan_id: str
     payment_method: str = "vietqr"
     customer_email: Optional[str] = None
     customer_name: Optional[str] = None
+
+
+class DemoBookingRequest(BaseModel):
+    name: str
+    company: str
+    email: str
+    phone: str
+    employees: Optional[str] = None
+    message: Optional[str] = None
+    timestamp: Optional[str] = None
 
 @app.get("/")
 async def root():
@@ -158,7 +345,7 @@ async def root():
 async def health():
     pg_status = "unavailable"
     try:
-        conn = psycopg2.connect(**DB_CONFIG)
+        conn = get_psycopg2().connect(**DB_CONFIG)
         conn.close()
         pg_status = "ok"
     except Exception as e:
@@ -172,7 +359,7 @@ async def health():
 @app.get("/leads")
 async def get_leads(limit: int = 50):
     try:
-        conn = psycopg2.connect(**DB_CONFIG)
+        conn = get_psycopg2().connect(**DB_CONFIG)
         cur = conn.cursor()
         cur.execute("SELECT id, name, email, phone, source, status, metadata, created_at, updated_at FROM leads ORDER BY created_at DESC LIMIT %s", (limit,))
         rows = cur.fetchall()
@@ -192,7 +379,7 @@ async def get_leads(limit: int = 50):
 @app.get("/analytics/overview")
 async def analytics_overview():
     try:
-        conn = psycopg2.connect(**DB_CONFIG)
+        conn = get_psycopg2().connect(**DB_CONFIG)
         cur = conn.cursor()
         cur.execute("SELECT status, COUNT(*) FROM leads GROUP BY status")
         leads_by_status = {r[0]: r[1] for r in cur.fetchall()}
@@ -406,7 +593,7 @@ class ProvinceResponse(BaseModel):
 async def globe_industries():
     """List Globe industries"""
     try:
-        conn = psycopg2.connect(**DB_CONFIG)
+        conn = get_psycopg2().connect(**DB_CONFIG)
         cursor = conn.cursor()
         cursor.execute("SELECT id, code, name, name_vi, icon, color, description FROM globe_industries WHERE is_active = true ORDER BY name")
         rows = cursor.fetchall()
@@ -421,7 +608,7 @@ async def globe_industries():
 async def globe_regions():
     """List Globe regions"""
     try:
-        conn = psycopg2.connect(**DB_CONFIG)
+        conn = get_psycopg2().connect(**DB_CONFIG)
         cursor = conn.cursor()
         cursor.execute("SELECT id, code, name, name_vi, country, latitude, longitude, timezone FROM globe_regions WHERE is_active = true ORDER BY country, name")
         rows = cursor.fetchall()
@@ -437,7 +624,7 @@ async def globe_regions():
 async def globe_tiers():
     """List Globe tiers"""
     try:
-        conn = psycopg2.connect(**DB_CONFIG)
+        conn = get_psycopg2().connect(**DB_CONFIG)
         cursor = conn.cursor()
         cursor.execute("SELECT id, code, name, name_vi, description, min_employees, max_employees FROM globe_tiers ORDER BY min_employees")
         rows = cursor.fetchall()
@@ -453,7 +640,7 @@ async def globe_tiers():
 async def globe_provinces(industry_id: Optional[str] = None, region_id: Optional[str] = None, tier_id: Optional[str] = None, limit: int = 100):
     """List Globe provinces"""
     try:
-        conn = psycopg2.connect(**DB_CONFIG)
+        conn = get_psycopg2().connect(**DB_CONFIG)
         cursor = conn.cursor()
         query = """
             SELECT p.id, p.name, p.name_vi, p.description, p.industry_id, p.region_id, p.tier_id,
@@ -498,7 +685,7 @@ async def globe_provinces(industry_id: Optional[str] = None, region_id: Optional
 async def globe_province_stats():
     """Get province statistics"""
     try:
-        conn = psycopg2.connect(**DB_CONFIG)
+        conn = get_psycopg2().connect(**DB_CONFIG)
         cursor = conn.cursor()
         cursor.execute("SELECT COUNT(*), SUM(total_companies), SUM(total_revenue), SUM(total_leads) FROM globe_provinces WHERE is_active = true")
         row = cursor.fetchone()
@@ -527,7 +714,7 @@ async def globe_province_stats():
 async def globe_chains():
     """List production chains"""
     try:
-        conn = psycopg2.connect(**DB_CONFIG)
+        conn = get_psycopg2().connect(**DB_CONFIG)
         cursor = conn.cursor()
         cursor.execute("SELECT id, chain_code, name, name_vi, description, stages FROM globe_chains WHERE is_active = true")
         rows = cursor.fetchall()
@@ -543,7 +730,7 @@ async def globe_chains():
 async def globe_pipeline_stats():
     """Get pipeline funnel statistics"""
     try:
-        conn = psycopg2.connect(**DB_CONFIG)
+        conn = get_psycopg2().connect(**DB_CONFIG)
         cursor = conn.cursor()
         cursor.execute("""
             SELECT current_stage, COUNT(*), COALESCE(SUM(pipeline_value), 0), COALESCE(AVG(probability), 0)
@@ -565,7 +752,7 @@ async def globe_pipeline_stats():
 async def globe_discovery_tree(category: Optional[str] = None):
     """Get discovery tree"""
     try:
-        conn = psycopg2.connect(**DB_CONFIG)
+        conn = get_psycopg2().connect(**DB_CONFIG)
         cursor = conn.cursor()
         query = """
             SELECT id, node_code, category, parent_code, name, name_vi, description, node_type, keywords, icon, color, selection_count
@@ -601,7 +788,7 @@ async def globe_discovery_tree(category: Optional[str] = None):
 async def globe_dashboard():
     """Globe overview dashboard"""
     try:
-        conn = psycopg2.connect(**DB_CONFIG)
+        conn = get_psycopg2().connect(**DB_CONFIG)
         cursor = conn.cursor()
         cursor.execute("SELECT COUNT(*) FROM globe_industries WHERE is_active = true")
         ind_count = cursor.fetchone()[0]
@@ -635,7 +822,7 @@ async def globe_status():
 async def globe_seed():
     """Seed provinces: Industry x Region x Tier combinations"""
     try:
-        conn = psycopg2.connect(**DB_CONFIG)
+        conn = get_psycopg2().connect(**DB_CONFIG)
         cursor = conn.cursor()
 
         # Check if provinces already exist
@@ -680,4 +867,228 @@ async def globe_seed():
         }
     except Exception as e:
         return {"error": str(e)}
+
+
+# ============== Auth Endpoints ==============
+
+@app.post("/api/auth/register", response_model=TokenResponse, summary="Register new user")
+async def register(user: UserRegister):
+    """Create a new user account and return JWT tokens."""
+    init_users_table()  # Ensure users table exists
+    conn = get_auth_db_conn()
+    if not conn:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT id FROM users WHERE email = %s", (user.email,))
+        if cursor.fetchone():
+            raise HTTPException(status_code=400, detail="Email already registered")
+        password_hash = hash_password(user.password)
+        cursor.execute(
+            "INSERT INTO users (email, password_hash, name, role, phone) VALUES (%s, %s, %s, %s, %s) RETURNING id, created_at",
+            (user.email, password_hash, user.name, user.role, user.phone)
+        )
+        user_id, created_at = cursor.fetchone()
+        conn.commit()
+        access_token = create_token(user_id, user.email, user.role, "access")
+        refresh_token = create_token(user_id, user.email, user.role, "refresh")
+        return TokenResponse(
+            access_token=access_token,
+            refresh_token=refresh_token,
+            expires_in=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+            user=UserResponse(id=user_id, email=user.email, name=user.name, role=user.role, created_at=str(created_at))
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Registration error: {str(e)}")
+    finally:
+        conn.close()
+
+
+@app.post("/api/auth/login", response_model=TokenResponse, summary="User login")
+async def login(user: UserLogin):
+    """Authenticate user and return JWT tokens."""
+    conn = get_auth_db_conn()
+    if not conn:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, email, password_hash, name, role, created_at, last_login, is_active FROM users WHERE email = %s", (user.email,))
+        row = cursor.fetchone()
+        if not row:
+            raise HTTPException(status_code=401, detail="Invalid email or password")
+        user_id, email, password_hash, name, role, created_at, last_login, is_active = row
+        if not is_active:
+            raise HTTPException(status_code=401, detail="Account is deactivated")
+        if not verify_password(user.password, password_hash):
+            raise HTTPException(status_code=401, detail="Invalid email or password")
+        cursor.execute("UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE id = %s", (user_id,))
+        conn.commit()
+        access_token = create_token(user_id, email, role, "access")
+        refresh_token = create_token(user_id, email, role, "refresh")
+        return TokenResponse(
+            access_token=access_token,
+            refresh_token=refresh_token,
+            expires_in=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+            user=UserResponse(id=user_id, email=email, name=name, role=role, created_at=str(created_at), last_login=str(last_login) if last_login else None)
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Login error: {str(e)}")
+    finally:
+        conn.close()
+
+
+@app.post("/api/auth/refresh", summary="Refresh access token")
+async def refresh_token(request: TokenRefresh):
+    """Exchange a valid refresh token for a new access token."""
+    try:
+        token_data = decode_token(request.refresh_token)
+        if token_data.get("type") != "refresh":
+            raise HTTPException(status_code=401, detail="Invalid token type - refresh token required")
+        return {
+            "access_token": create_token(token_data["user_id"], token_data["email"], token_data["role"], "access"),
+            "refresh_token": create_token(token_data["user_id"], token_data["email"], token_data["role"], "refresh"),
+            "token_type": "bearer",
+            "expires_in": ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=401, detail=f"Token refresh error: {str(e)}")
+
+
+@app.get("/api/auth/me", response_model=UserResponse, summary="Get current user")
+async def get_me(current_user: dict = Depends(get_current_user)):
+    """Get the authenticated user's profile."""
+    conn = get_auth_db_conn()
+    if not conn:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, email, name, role, created_at, last_login FROM users WHERE id = %s", (current_user["user_id"],))
+        row = cursor.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="User not found")
+        return UserResponse(id=row[0], email=row[1], name=row[2], role=row[3], created_at=str(row[4]), last_login=str(row[5]) if row[5] else None)
+    finally:
+        conn.close()
+
+
+@app.post("/api/auth/logout", summary="Logout user")
+async def logout(current_user: dict = Depends(get_current_user)):
+    """Logout the current user (client should discard tokens)."""
+    return {"message": "Logged out successfully", "user_id": current_user["user_id"]}
+
+
+@app.post("/api/auth/change-password", summary="Change password")
+async def change_password(request: PasswordChange, current_user: dict = Depends(get_current_user)):
+    """Change the current user's password."""
+    conn = get_auth_db_conn()
+    if not conn:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT password_hash FROM users WHERE id = %s", (current_user["user_id"],))
+        row = cursor.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="User not found")
+        if not verify_password(request.current_password, row[0]):
+            raise HTTPException(status_code=401, detail="Current password is incorrect")
+        new_hash = hash_password(request.new_password)
+        cursor.execute("UPDATE users SET password_hash = %s, updated_at = CURRENT_TIMESTAMP WHERE id = %s", (new_hash, current_user["user_id"]))
+        conn.commit()
+        return {"message": "Password changed successfully"}
+    finally:
+        conn.close()
+
+
+@app.post("/api/auth/password-reset-request", summary="Request password reset")
+async def password_reset_request(email: str):
+    """Request password reset (email integration pending)."""
+    return {"message": "If the email exists, a password reset link has been sent", "email": email, "note": "Email integration pending"}
+
+
+# Demo booking endpoint
+DEMO_SALES_EMAIL = "thanhtungtran364@gmail.com"
+RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")
+
+
+@app.post("/api/demo")
+async def create_demo_booking(booking: DemoBookingRequest):
+    """Capture demo booking form submissions and notify sales team."""
+    try:
+        conn = get_psycopg2().connect(**DB_CONFIG)
+        cursor = conn.cursor()
+
+        metadata = {
+            "company": booking.company,
+            "employees": booking.employees,
+            "message": booking.message,
+            "timestamp": booking.timestamp,
+        }
+
+        cursor.execute("""
+            INSERT INTO leads (name, email, phone, source, status, metadata, created_at, updated_at)
+            VALUES (%s, %s, %s, %s, %s, %s, NOW(), NOW())
+            RETURNING id
+        """, (
+            booking.name,
+            booking.email,
+            booking.phone,
+            "demo_booking",
+            "new",
+            str(metadata),
+        ))
+
+        result = cursor.fetchone()
+        lead_id = result[0]
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        # Send email notification via Resend
+        if RESEND_API_KEY:
+            try:
+                email_body = f"""New Demo Booking Request
+
+Name: {booking.name}
+Company: {booking.company}
+Email: {booking.email}
+Phone: {booking.phone}
+Employees: {booking.employees or "N/A"}
+Message: {booking.message or "N/A"}
+Submitted: {booking.timestamp or "N/A"}
+
+---
+AI City Backend - Lead ID: {lead_id}
+"""
+                resend_resp = requests.post(
+                    "https://api.resend.com/emails",
+                    headers={
+                        "Authorization": f"Bearer {RESEND_API_KEY}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "from": "AI City <onboarding@resend.dev>",
+                        "to": DEMO_SALES_EMAIL,
+                        "subject": f"New Demo Booking: {booking.name} from {booking.company}",
+                        "text": email_body,
+                    },
+                    timeout=10,
+                )
+                if resend_resp.status_code not in (200, 201):
+                    pass  # Non-fatal, lead is captured
+            except Exception:
+                pass  # Non-fatal
+
+        return {
+            "success": True,
+            "message": "Demo booking received. Our team will contact you shortly.",
+            "lead_id": lead_id,
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
 

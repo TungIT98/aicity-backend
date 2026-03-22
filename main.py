@@ -7,14 +7,19 @@ Documentation: http://localhost:3200/docs
 OpenAPI Schema: http://localhost:3200/openapi.json
 """
 
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.docs import get_redoc_html, get_swagger_ui_html, get_swagger_ui_oauth2_redirect_html
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import Optional, List
 import psycopg2
 import requests
 import os
+import logging
+import traceback
+
+log = logging.getLogger(__name__)
 
 app = FastAPI(
     title="AI City API",
@@ -74,6 +79,10 @@ Authorization: Bearer <your_token>
         {
             "name": "Leads",
             "description": "CRM lead management and conversion tracking",
+        },
+        {
+            "name": "Demo",
+            "description": "Demo booking form lead capture",
         },
         {
             "name": "Analytics",
@@ -319,6 +328,23 @@ class LeadResponse(BaseModel):
     metadata: dict
     created_at: str
     updated_at: str
+
+
+# Demo booking models
+class DemoBookingRequest(BaseModel):
+    name: str
+    company: str
+    email: str
+    phone: str
+    employees: Optional[str] = None
+    message: Optional[str] = None
+    timestamp: Optional[str] = None
+
+
+class DemoBookingResponse(BaseModel):
+    success: bool
+    message: str
+    lead_id: int
 
 
 # Analytics endpoints
@@ -811,6 +837,89 @@ async def generate_report(report_type: str = "weekly"):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# Demo booking endpoint
+DEMO_SALES_EMAIL = "thanhtungtran364@gmail.com"
+RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")
+
+
+@app.post("/api/demo", response_model=DemoBookingResponse, tags=["Demo"])
+async def create_demo_booking(booking: DemoBookingRequest):
+    """Capture demo booking form submissions and notify sales team."""
+    try:
+        conn = psycopg2.connect(**DB_CONFIG)
+        cursor = conn.cursor()
+
+        metadata = {
+            "company": booking.company,
+            "employees": booking.employees,
+            "message": booking.message,
+            "timestamp": booking.timestamp,
+        }
+
+        cursor.execute("""
+            INSERT INTO leads (name, email, phone, source, status, metadata, created_at, updated_at)
+            VALUES (%s, %s, %s, %s, %s, %s, NOW(), NOW())
+            RETURNING id
+        """, (
+            booking.name,
+            booking.email,
+            booking.phone,
+            "demo_booking",
+            "new",
+            str(metadata),
+        ))
+
+        result = cursor.fetchone()
+        lead_id = result[0]
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        # Send email notification via Resend
+        if RESEND_API_KEY:
+            try:
+                email_body = f"""New Demo Booking Request
+
+Name: {booking.name}
+Company: {booking.company}
+Email: {booking.email}
+Phone: {booking.phone}
+Employees: {booking.employees or "N/A"}
+Message: {booking.message or "N/A"}
+Submitted: {booking.timestamp or "N/A"}
+
+---
+AI City Backend - Lead ID: {lead_id}
+"""
+                resend_resp = requests.post(
+                    "https://api.resend.com/emails",
+                    headers={
+                        "Authorization": f"Bearer {RESEND_API_KEY}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "from": "AI City <onboarding@resend.dev>",
+                        "to": DEMO_SALES_EMAIL,
+                        "subject": f"New Demo Booking: {booking.name} from {booking.company}",
+                        "text": email_body,
+                    },
+                    timeout=10,
+                )
+                if resend_resp.status_code not in (200, 201):
+                    log.warning(f"Resend email failed: {resend_resp.status_code} {resend_resp.text}")
+            except Exception as email_err:
+                log.warning(f"Failed to send demo booking email: {email_err}")
+
+        return DemoBookingResponse(
+            success=True,
+            message="Demo booking received. Our team will contact you shortly.",
+            lead_id=lead_id,
+        )
+    except Exception as e:
+        log.error(f"Demo booking failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/reports")
 async def list_reports(limit: int = 10):
     """List generated reports"""
@@ -915,6 +1024,60 @@ app.include_router(analytics_router)
 # Import Globe AI City data layer router
 from globe import router as globe_router
 app.include_router(globe_router)
+
+# Import Storage Infrastructure router (AIC-518)
+from api.storage import router as storage_router
+app.include_router(storage_router)
+
+# Import Logging API router (AIC-528 - ELK-compatible structured logging)
+from api.logging_api import router as logging_router
+app.include_router(logging_router)
+
+# ─── API Versioning (AIC-538) ────────────────────────────────────────────────────
+# Mount v1 sub-app at /v1/ for versioned API access
+# See API_VERSIONING.md for versioning strategy details
+from api.v1 import _v1_app
+app.mount("/v1", _v1_app)
+
+# Rate Limiting Middleware (AIC-526)
+from api.rate_limiter import RateLimitMiddleware
+app.add_middleware(RateLimitMiddleware)
+
+
+# ─── Standardized Exception Handlers (AIC-526) ────────────────────────────────
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
+    """Standardized HTTP exception response format."""
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "error": {
+                "code": exc.status_code,
+                "message": exc.detail,
+                "type": exc.__class__.__name__,
+            },
+            "request_id": getattr(request.state, "request_id", None),
+        },
+        headers=getattr(exc, "headers", None) or {},
+    )
+
+
+@app.exception_handler(Exception)
+async def generic_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    """Standardized 500 error response - never leaks internals."""
+    log.error(f"Unhandled exception: {exc}\n{traceback.format_exc()}")
+    return JSONResponse(
+        status_code=500,
+        content={
+            "error": {
+                "code": 500,
+                "message": "Internal server error",
+                "type": "InternalServerError",
+            },
+            "request_id": getattr(request.state, "request_id", None),
+        },
+    )
 
 # Import tracking module
 import tracking
