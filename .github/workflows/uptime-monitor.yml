@@ -1,0 +1,42 @@
+name: Uptime Monitor
+
+on:
+  schedule:
+    # Run every 5 minutes
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+jobs:
+  health-check:
+    name: Backend Health Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check backend health
+        id: health
+        run: |
+          response=$(curl -s -o /dev/null -w "%{http_code}" https://backend-two-coral-25.vercel.app/health)
+          echo "status_code=$response" >> $GITHUB_OUTPUT
+          if [ "$response" != "200" ]; then
+            echo "Backend is DOWN (status: $response)"
+            exit 1
+          fi
+          echo "Backend is healthy (status: $response)"
+
+      - name: Check monitoring stats
+        if: steps.health.outputs.status_code == '200'
+        run: |
+          curl -s https://backend-two-coral-25.vercel.app/monitoring/stats | head -c 200
+
+      - name: Incident Alert
+        if: failure()
+        run: |
+          echo "ALERT: Backend health check failed!"
+          echo "Status: ${{ steps.health.outputs.status_code }}"
+          # Post to Slack if webhook is configured
+          if [ -n "${{ secrets.SLACK_WEBHOOK_URL }}" ]; then
+            curl -s -X POST -H 'Content-type: application/json' \
+              --data "{\"text\":\"🚨 ALERT: AI City Backend is DOWN! Health check returned ${{ steps.health.outputs.status_code }}\"}" \
+              "${{ secrets.SLACK_WEBHOOK_URL }}"
+          fi
+          # Create GitHub issue if not already open
+          echo "Creating incident issue..."

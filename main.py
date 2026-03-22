@@ -1080,6 +1080,11 @@ async def generic_exception_handler(request: Request, exc: Exception) -> JSONRes
         },
     )
 
+
+# Import Monitoring router (health, stats, alerting)
+from monitoring import router as monitoring_router
+app.include_router(monitoring_router)
+
 # Import tracking module
 import tracking
 from tracking import (
