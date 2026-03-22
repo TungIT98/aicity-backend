@@ -1263,6 +1263,7 @@ async def get_revenue_metrics():
         conn = get_psycopg2().connect(**DB_CONFIG)
         cursor = conn.cursor()
 
+        # Lead revenue from converted leads (revenue stored in metadata JSONB)
         cursor.execute("""
             SELECT COALESCE(SUM(CAST(metadata->>'revenue' AS numeric)), 0) as total
             FROM leads
@@ -1270,21 +1271,25 @@ async def get_revenue_metrics():
         """)
         result = cursor.fetchone()
 
-        # Get subscription revenue
-        cursor.execute("""
-            SELECT COALESCE(SUM(amount), 0) as total
-            FROM subscriptions
-            WHERE status = 'active'
-        """)
-        sub_result = cursor.fetchone()
+        # Subscription revenue (fallback to 0 if table/column doesn't exist)
+        try:
+            cursor.execute("""
+                SELECT COALESCE(SUM(amount), 0) as total
+                FROM subscriptions
+                WHERE status = 'active'
+            """)
+            sub_result = cursor.fetchone()
+            subscription_revenue = float(sub_result[0] or 0) if sub_result else 0
+        except Exception:
+            subscription_revenue = 0
 
         cursor.close()
         conn.close()
 
         return {
             "lead_revenue": float(result[0] or 0),
-            "subscription_revenue": float(sub_result[0] or 0),
-            "total_revenue": float(result[0] or 0) + float(sub_result[0] or 0),
+            "subscription_revenue": subscription_revenue,
+            "total_revenue": float(result[0] or 0) + subscription_revenue,
             "period": "all_time"
         }
     except Exception as e:
