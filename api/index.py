@@ -393,6 +393,34 @@ async def analytics_overview():
     except Exception as e:
         return {"error": str(e)}
 
+
+@app.get("/analytics/revenue")
+async def analytics_revenue():
+    """Get revenue tracking data from converted leads"""
+    try:
+        conn = get_psycopg2().connect(**DB_CONFIG)
+        cur = conn.cursor()
+
+        # Get revenue from converted leads using metadata JSONB field
+        cur.execute("""
+            SELECT COALESCE(SUM(CAST(metadata->>'revenue' AS numeric)), 0) as total
+            FROM leads
+            WHERE status = 'converted'
+        """)
+        result = cur.fetchone()
+
+        cur.close()
+        conn.close()
+
+        return {
+            "total_revenue": float(result[0] or 0),
+            "currency": "USD",
+            "period": "all_time"
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
 # ============== Payment Endpoints ==============
 
 @app.get("/payments/methods")
