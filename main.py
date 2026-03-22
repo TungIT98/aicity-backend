@@ -515,6 +515,13 @@ async def get_matomo_data(method: str = "VisitsSummary.get", period: str = "day"
         return {"error": str(e)}
 
 
+# Lead analytics endpoints
+@app.get("/leads/analytics/conversion")
+async def get_leads_conversion_analytics():
+    """Get lead conversion analytics - /api/leads/analytics/conversion"""
+    return await get_lead_analytics()
+
+
 # Lead tracking endpoints
 @app.post("/leads", response_model=LeadResponse)
 async def create_lead(lead: LeadCreate):
@@ -1042,6 +1049,10 @@ app.include_router(storage_router)
 # Import Logging API router (AIC-528 - ELK-compatible structured logging)
 from api.logging_api import router as logging_router
 app.include_router(logging_router)
+
+# Import Agents router (AIC-590)
+from agents import router as agents_router, list_agents, get_agent_usage as get_agents_usage
+app.include_router(agents_router)
 
 # ─── API Versioning (AIC-538) ────────────────────────────────────────────────────
 # Mount v1 sub-app at /v1/ for versioned API access

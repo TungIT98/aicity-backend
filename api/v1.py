@@ -176,3 +176,8 @@ _v1_app.add_api_route(
     methods=["GET"],
     tags=["Root"],
 )
+
+# ─── Agents (v1) ──────────────────────────────────────────────────────────────
+
+_v1_app.add_api_route("/agents", _main.list_agents, methods=["GET"], tags=["Agents"])
+_v1_app.add_api_route("/agents/usage", _main.get_agents_usage, methods=["GET"], tags=["Agents"])

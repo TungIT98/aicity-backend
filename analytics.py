@@ -351,3 +351,111 @@ async def get_payments_overview():
             )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Payments overview failed: {str(e)}")
+
+
+# ---- Conversion Analytics ----
+
+class ConversionItem(BaseModel):
+    source: str
+    total: int
+    converted: int
+    rate: float
+
+
+class ConversionResponse(BaseModel):
+    by_source: List[ConversionItem]
+    total_leads: int
+    total_converted: int
+    overall_rate: float
+
+
+@router.get("/conversions", response_model=ConversionResponse)
+async def get_conversions():
+    """Get lead conversion analytics (overall)."""
+    try:
+        async with async_session() as session:
+            # Conversion by source
+            source_result = await session.execute(text("""
+                SELECT
+                    COALESCE(source, 'direct') AS source,
+                    COUNT(*)                   AS total,
+                    COUNT(CASE WHEN status = 'converted' THEN 1 END) AS converted
+                FROM leads
+                GROUP BY source
+                ORDER BY total DESC
+            """))
+            source_rows = source_result.fetchall()
+
+            by_source = []
+            for r in source_rows:
+                rate = round((r[2] or 0) / (r[1] or 1) * 100, 2)
+                by_source.append(ConversionItem(
+                    source=r[0] or "direct",
+                    total=r[1] or 0,
+                    converted=r[2] or 0,
+                    rate=rate,
+                ))
+
+            # Totals
+            total_result = await session.execute(text("""
+                SELECT COUNT(*) AS total,
+                       COUNT(CASE WHEN status = 'converted' THEN 1 END) AS converted
+                FROM leads
+            """))
+            total_row = total_result.fetchone()
+            total_leads = total_row[0] or 0
+            total_converted = total_row[1] or 0
+            overall_rate = round(total_converted / total_leads * 100, 2) if total_leads > 0 else 0.0
+
+            return ConversionResponse(
+                by_source=by_source,
+                total_leads=total_leads,
+                total_converted=total_converted,
+                overall_rate=overall_rate,
+            )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Conversions failed: {str(e)}")
+
+
+# ---- Revenue Summary ----
+
+class RevenueSummary(BaseModel):
+    total_revenue: float
+    total_transactions: int
+    avg_transaction: float
+    currency: str = "VND"
+
+
+@router.get("/revenue", response_model=RevenueSummary)
+async def get_revenue_summary(
+    start_date: Optional[str] = Query(None, description="YYYY-MM-DD"),
+    end_date: Optional[str] = Query(None, description="YYYY-MM-DD"),
+):
+    """Get revenue summary (simplified /api/analytics/revenue)."""
+    if not start_date:
+        start_date = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
+    if not end_date:
+        end_date = datetime.now().strftime("%Y-%m-%d")
+
+    try:
+        async with async_session() as session:
+            result = await session.execute(
+                text("""
+                    SELECT
+                        COALESCE(SUM(amount), 0) AS total,
+                        COUNT(*)                  AS count,
+                        COALESCE(AVG(amount), 0) AS avg
+                    FROM revenue_transactions
+                    WHERE transaction_date BETWEEN :start_date AND :end_date
+                      AND status = 'completed'
+                """),
+                {"start_date": start_date, "end_date": end_date}
+            )
+            row = result.fetchone()
+            return RevenueSummary(
+                total_revenue=float(row[0] or 0),
+                total_transactions=row[1] or 0,
+                avg_transaction=float(row[2] or 0),
+            )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Revenue summary failed: {str(e)}")
