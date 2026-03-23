@@ -1358,13 +1358,64 @@ async def api_get_conversions():
 @app.get("/api/analytics/revenue")
 async def api_get_revenue():
     """Get revenue - /api/analytics/revenue alias."""
-    return await get_revenue_metrics()
+    try:
+        conn = get_psycopg2().connect(**DB_CONFIG)
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT
+                COALESCE(SUM(amount), 0) AS total,
+                COUNT(*) AS count,
+                COALESCE(AVG(amount), 0) AS avg
+            FROM revenue_transactions
+            WHERE status = 'completed'
+        """)
+        result = cursor.fetchone()
+        cursor.close()
+        conn.close()
+        return {
+            "total_revenue": float(result[0] or 0),
+            "total_transactions": result[1] or 0,
+            "avg_transaction": float(result[2] or 0),
+            "currency": "VND",
+            "period": "30d"
+        }
+    except Exception as e:
+        return {"error": str(e)}
 
 
 @app.get("/api/leads/analytics/conversion")
 async def api_get_lead_analytics():
     """Get lead analytics - /api/leads/analytics/conversion alias."""
     return await get_lead_analytics()
+
+
+@app.get("/api/analytics/overview")
+async def api_analytics_overview():
+    """Get analytics overview - /api/analytics/overview (no auth required)."""
+    try:
+        conn = get_psycopg2().connect(**DB_CONFIG)
+        cursor = conn.cursor()
+        cursor.execute("SELECT status, COUNT(*) FROM leads GROUP BY status")
+        leads_by_status = {r[0]: r[1] for r in cursor.fetchall()}
+        cursor.execute("""
+            SELECT
+                COUNT(*) AS total,
+                COUNT(CASE WHEN created_at >= NOW() - INTERVAL '7 days' THEN 1 END) AS "7d",
+                COUNT(CASE WHEN created_at >= NOW() - INTERVAL '30 days' THEN 1 END) AS "30d"
+            FROM leads
+        """)
+        counts = cursor.fetchone()
+        cursor.close()
+        conn.close()
+        return {
+            "leads": leads_by_status,
+            "total_leads": counts[0] or 0,
+            "leads_7d": counts[1] or 0,
+            "leads_30d": counts[2] or 0,
+            "period": "today"
+        }
+    except Exception as e:
+        return {"error": str(e)}
 
 
 # =============================================================================
