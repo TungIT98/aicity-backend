@@ -1366,3 +1366,333 @@ async def api_get_lead_analytics():
     """Get lead analytics - /api/leads/analytics/conversion alias."""
     return await get_lead_analytics()
 
+
+# =============================================================================
+# AIC-619: Missing /api/ prefixed routes for frontend
+# =============================================================================
+
+class LeadCreateRequest(BaseModel):
+    name: str
+    email: str
+    phone: Optional[str] = None
+    source: str = "api"
+    status: str = "new"
+    metadata: Optional[dict] = {}
+
+
+class LeadUpdateRequest(BaseModel):
+    name: Optional[str] = None
+    email: Optional[str] = None
+    phone: Optional[str] = None
+    source: Optional[str] = None
+    status: Optional[str] = None
+    metadata: Optional[dict] = None
+
+
+class SearchRequestModel(BaseModel):
+    query: str
+    limit: int = 5
+
+
+class ReportGenerateRequest(BaseModel):
+    report_type: str = "weekly"
+    period: Optional[str] = None
+
+
+# ─── /api/leads ───────────────────────────────────────────────────────────────
+
+@app.post("/api/leads")
+async def api_create_lead(lead: LeadCreateRequest):
+    """Create a new lead - /api/leads (POST)"""
+    try:
+        conn = get_psycopg2().connect(**DB_CONFIG)
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO leads (name, email, phone, source, status, metadata, created_at, updated_at)
+            VALUES (%s, %s, %s, %s, %s, %s, NOW(), NOW())
+            RETURNING id, name, email, phone, source, status, metadata, created_at, updated_at
+        """, (lead.name, lead.email, lead.phone, lead.source, lead.status, json.dumps(lead.metadata or {})))
+        row = cur.fetchone()
+        conn.commit()
+        cur.close()
+        conn.close()
+        return {
+            "id": row[0], "name": row[1], "email": row[2], "phone": row[3],
+            "source": row[4], "status": row[5], "metadata": row[6],
+            "created_at": str(row[7]), "updated_at": str(row[8])
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/leads")
+async def api_list_leads(status: Optional[str] = None, limit: int = 50):
+    """List leads - /api/leads (GET)"""
+    try:
+        conn = get_psycopg2().connect(**DB_CONFIG)
+        cur = conn.cursor()
+        if status:
+            cur.execute(
+                "SELECT id, name, email, phone, source, status, metadata, created_at, updated_at FROM leads WHERE status = %s ORDER BY created_at DESC LIMIT %s",
+                (status, limit)
+            )
+        else:
+            cur.execute("SELECT id, name, email, phone, source, status, metadata, created_at, updated_at FROM leads ORDER BY created_at DESC LIMIT %s", (limit,))
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        return [
+            {"id": r[0], "name": r[1], "email": r[2], "phone": r[3],
+             "source": r[4], "status": r[5], "metadata": r[6],
+             "created_at": str(r[7]), "updated_at": str(r[8])}
+            for r in rows
+        ]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/leads/{lead_id}")
+async def api_get_lead(lead_id: int):
+    """Get a lead by ID - /api/leads/{id}"""
+    try:
+        conn = get_psycopg2().connect(**DB_CONFIG)
+        cur = conn.cursor()
+        cur.execute("SELECT id, name, email, phone, source, status, metadata, created_at, updated_at FROM leads WHERE id = %s", (lead_id,))
+        row = cur.fetchone()
+        cur.close()
+        conn.close()
+        if not row:
+            raise HTTPException(status_code=404, detail="Lead not found")
+        return {
+            "id": row[0], "name": row[1], "email": row[2], "phone": row[3],
+            "source": row[4], "status": row[5], "metadata": row[6],
+            "created_at": str(row[7]), "updated_at": str(row[8])
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.patch("/api/leads/{lead_id}")
+async def api_update_lead(lead_id: int, lead: LeadUpdateRequest):
+    """Update a lead - /api/leads/{id} (PATCH)"""
+    try:
+        conn = get_psycopg2().connect(**DB_CONFIG)
+        cur = conn.cursor()
+        fields = []
+        values = []
+        if lead.name is not None:
+            fields.append("name = %s"); values.append(lead.name)
+        if lead.email is not None:
+            fields.append("email = %s"); values.append(lead.email)
+        if lead.phone is not None:
+            fields.append("phone = %s"); values.append(lead.phone)
+        if lead.source is not None:
+            fields.append("source = %s"); values.append(lead.source)
+        if lead.status is not None:
+            fields.append("status = %s"); values.append(lead.status)
+        if lead.metadata is not None:
+            fields.append("metadata = %s"); values.append(json.dumps(lead.metadata))
+        if not fields:
+            raise HTTPException(status_code=400, detail="No fields to update")
+        fields.append("updated_at = NOW()")
+        values.append(lead_id)
+        query = f"UPDATE leads SET {', '.join(fields)} WHERE id = %s RETURNING id, name, email, phone, source, status, metadata, created_at, updated_at"
+        cur.execute(query, values)
+        row = cur.fetchone()
+        conn.commit()
+        cur.close()
+        conn.close()
+        if not row:
+            raise HTTPException(status_code=404, detail="Lead not found")
+        return {
+            "id": row[0], "name": row[1], "email": row[2], "phone": row[3],
+            "source": row[4], "status": row[5], "metadata": row[6],
+            "created_at": str(row[7]), "updated_at": str(row[8])
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ─── /api/search ──────────────────────────────────────────────────────────────
+
+@app.post("/api/search")
+async def api_search(req: SearchRequestModel):
+    """Semantic search - /api/search (POST)"""
+    try:
+        OLLAMA_URL_INDEX = os.getenv("OLLAMA_URL", "http://localhost:11434")
+        QDRANT_URL_INDEX = os.getenv("QDRANT_URL", "http://localhost:6333")
+        # Get embedding from Ollama
+        emb_resp = requests.post(
+            f"{OLLAMA_URL_INDEX}/api/embeddings",
+            json={"model": "nomic-embed-text", "prompt": req.query},
+            timeout=10
+        )
+        if emb_resp.status_code != 200:
+            return {"error": "Embedding service unavailable", "results": []}
+        embedding = emb_resp.json().get("embedding", [])
+        if not embedding:
+            return {"error": "No embedding returned", "results": []}
+        # Search Qdrant
+        qdrant_resp = requests.post(
+            f"{QDRANT_URL_INDEX}/collections/ai_city_embeddings/points/search",
+            json={
+                "vector": embedding,
+                "limit": req.limit,
+                "with_payload": True
+            },
+            timeout=10
+        )
+        if qdrant_resp.status_code != 200:
+            return {"error": "Vector DB unavailable", "results": []}
+        results = qdrant_resp.json()
+        return {"results": [{"id": r["id"], "score": r["score"], "payload": r.get("payload", {})} for r in results]}
+    except Exception as e:
+        return {"error": str(e), "results": []}
+
+
+# ─── /api/reports ─────────────────────────────────────────────────────────────
+
+@app.get("/api/reports")
+async def api_list_reports(limit: int = 20):
+    """List reports - /api/reports (GET)"""
+    try:
+        conn = get_psycopg2().connect(**DB_CONFIG)
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT id, name, description, type, created_at FROM reports
+            ORDER BY created_at DESC LIMIT %s
+        """, (limit,))
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        return [{"id": r[0], "name": r[1], "description": r[2], "type": r[3], "created_at": str(r[4])} for r in rows]
+    except Exception as e:
+        return {"error": str(e), "reports": []}
+
+
+@app.post("/api/reports/generate")
+async def api_generate_report(req: ReportGenerateRequest):
+    """Generate a report - /api/reports/generate (POST)"""
+    try:
+        conn = get_psycopg2().connect(**DB_CONFIG)
+        cur = conn.cursor()
+        # Get lead stats
+        cur.execute("SELECT COUNT(*), COUNT(*) FILTER (WHERE status = 'qualified' OR status = 'converted'), COUNT(*) FILTER (WHERE status = 'converted') FROM leads")
+        lead_row = cur.fetchone()
+        # Get revenue stats
+        cur.execute("SELECT COALESCE(SUM(amount), 0) FROM payments WHERE status = 'completed'")
+        revenue = cur.fetchone()[0]
+        cur.execute("SELECT COALESCE(SUM(amount), 0) FROM payments WHERE status = 'pending'")
+        pending = cur.fetchone()[0]
+        cur.close()
+        conn.close()
+        conversion_rate = (lead_row[2] / lead_row[0] * 100) if lead_row[0] > 0 else 0
+        report = {
+            "name": f"{req.report_type.title()} Report",
+            "type": req.report_type,
+            "description": f"Generated on {datetime.datetime.utcnow().isoformat()}",
+            "data": {
+                "total_leads": lead_row[0],
+                "qualified_leads": lead_row[1],
+                "converted_leads": lead_row[2],
+                "conversion_rate": round(conversion_rate, 2),
+                "total_revenue": float(revenue),
+                "pending_revenue": float(pending)
+            }
+        }
+        return report
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ─── /api/forecasting ────────────────────────────────────────────────────────
+
+@app.get("/api/forecasting")
+async def api_forecasting(period: str = "30d"):
+    """Lead/revenue forecasting - /api/forecasting (GET)"""
+    try:
+        conn = get_psycopg2().connect(**DB_CONFIG)
+        cur = conn.cursor()
+        days = 30 if period == "30d" else 90 if period == "90d" else 7
+        cur.execute(f"""
+            SELECT DATE_TRUNC('week', created_at) as week,
+                   COUNT(*) as total,
+                   COUNT(*) FILTER (WHERE status = 'qualified') as qualified,
+                   COUNT(*) FILTER (WHERE status = 'converted') as converted
+            FROM leads WHERE created_at >= NOW() - INTERVAL '{days} days'
+            GROUP BY DATE_TRUNC('week', created_at) ORDER BY week
+        """)
+        weekly = cur.fetchall()
+        cur.execute("SELECT COUNT(*), COUNT(*) FILTER (WHERE status = 'qualified' OR status = 'converted'), COUNT(*) FILTER (WHERE status = 'converted') FROM leads")
+        total_row = cur.fetchone()
+        cur.close()
+        conn.close()
+        total_leads, total_qualified, total_converted = total_row
+        conversion_rate = (total_converted / total_leads * 100) if total_leads > 0 else 0
+        if len(weekly) >= 2:
+            recent, prev = weekly[-1], weekly[-2]
+            growth_rate = (recent[1] - prev[1]) / prev[1] if prev[1] > 0 else 0
+            projected_30d = max(0, int(recent[1] * (1 + growth_rate)))
+            projected_90d = max(0, int(recent[1] * (1 + growth_rate) ** 3))
+        else:
+            projected_30d = max(0, int(total_leads * 0.1))
+            projected_90d = max(0, int(total_leads * 0.3))
+        return {
+            "period": period,
+            "total_leads": total_leads,
+            "total_qualified": total_qualified,
+            "total_converted": total_converted,
+            "conversion_rate": round(conversion_rate, 2),
+            "weekly_trend": [{"week": str(w[0].date()), "total": w[1], "qualified": w[2], "converted": w[3]} for w in weekly],
+            "projections": {"leads_30d": projected_30d, "leads_90d": projected_90d}
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ─── /api/metrics ────────────────────────────────────────────────────────────
+
+@app.get("/api/metrics")
+async def api_metrics(type: str = "overview"):
+    """Unified metrics endpoint - /api/metrics (GET)"""
+    try:
+        conn = get_psycopg2().connect(**DB_CONFIG)
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT COUNT(*) FILTER (WHERE type = 'subscription'),
+                   COUNT(*) FILTER (WHERE type = 'one_time'),
+                   COALESCE(SUM(amount), 0) FILTER (WHERE status = 'completed'),
+                   COUNT(*) FILTER (WHERE status = 'pending')
+            FROM payments
+        """)
+        payments_row = cur.fetchone()
+        cur.execute("""
+            SELECT COUNT(*) FILTER (WHERE status = 'new'),
+                   COUNT(*) FILTER (WHERE status = 'qualified'),
+                   COUNT(*) FILTER (WHERE status = 'contacted'),
+                   COUNT(*) FILTER (WHERE status = 'converted')
+            FROM leads
+        """)
+        leads_row = cur.fetchone()
+        cur.execute("SELECT COUNT(*) FROM subscriptions WHERE status = 'active'")
+        active_subs = cur.fetchone()[0]
+        cur.close()
+        conn.close()
+        return {
+            "subscriptions": payments_row[0] or 0,
+            "one_time_payments": payments_row[1] or 0,
+            "total_revenue": float(payments_row[2] or 0),
+            "pending_payments": payments_row[3] or 0,
+            "leads_new": leads_row[0] or 0,
+            "leads_qualified": leads_row[1] or 0,
+            "leads_contacted": leads_row[2] or 0,
+            "leads_converted": leads_row[3] or 0,
+            "active_subscriptions": active_subs or 0,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
