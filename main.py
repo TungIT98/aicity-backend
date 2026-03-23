@@ -319,6 +319,11 @@ class LeadUpdate(BaseModel):
     status: Optional[str] = None
     metadata: Optional[dict] = None
 
+
+class ReportRequest(BaseModel):
+    report_type: str = "weekly"
+    period: Optional[str] = None
+
 class LeadResponse(BaseModel):
     id: int
     name: str
@@ -1063,6 +1068,197 @@ app.mount("/v1", _v1_app)
 # Rate Limiting Middleware (AIC-526)
 from api.rate_limiter import RateLimitMiddleware
 app.add_middleware(RateLimitMiddleware)
+
+
+# ─── API Prefix Aliases (AIC-619) ─────────────────────────────────────────────
+# Frontend calls /api/leads, /api/search, /api/reports, /api/forecasting, /api/metrics
+# These alias to the existing root-level routes for backward compatibility.
+
+@app.post("/api/leads", response_model=LeadResponse, tags=["Leads"])
+async def api_create_lead(lead: LeadCreate):
+    """Create a new lead - /api/leads (alias for /leads)"""
+    return await create_lead(lead)
+
+
+@app.get("/api/leads", tags=["Leads"])
+async def api_list_leads(status: Optional[str] = None, limit: int = 50):
+    """List leads - /api/leads (alias for /leads)"""
+    return await list_leads(status=status, limit=limit)
+
+
+@app.get("/api/leads/{lead_id}", tags=["Leads"])
+async def api_get_lead(lead_id: int):
+    """Get a lead by ID - /api/leads/{id}"""
+    return await get_lead(lead_id)
+
+
+@app.patch("/api/leads/{lead_id}", tags=["Leads"])
+async def api_update_lead(lead_id: int, lead: LeadUpdate):
+    """Update a lead - /api/leads/{id}"""
+    return await update_lead(lead_id, lead)
+
+
+@app.get("/api/leads/analytics/conversion", tags=["Leads"])
+async def api_leads_conversion_analytics():
+    """Lead conversion analytics - /api/leads/analytics/conversion"""
+    return await get_leads_conversion_analytics()
+
+
+@app.post("/api/search", response_model=List[SearchResult], tags=["Search"])
+async def api_search(request: SearchRequest):
+    """Semantic search - /api/search (alias for /search)"""
+    return await search(request)
+
+
+@app.get("/api/reports", tags=["Reports"])
+async def api_list_reports(limit: int = 20):
+    """List reports - /api/reports (alias for /reports)"""
+    return await list_reports(limit=limit)
+
+
+@app.get("/api/reports/{report_id}", tags=["Reports"])
+async def api_get_report(report_id: int):
+    """Get a report - /api/reports/{id}"""
+    return await get_report(report_id)
+
+
+@app.post("/api/reports/generate", tags=["Reports"])
+async def api_generate_report(report: ReportRequest):
+    """Generate a report - /api/reports/generate"""
+    return await generate_report(report)
+
+
+# ─── Forecasting & Metrics (AIC-619) ───────────────────────────────────────────
+# Endpoints the frontend expects that didn't exist before.
+
+@app.get("/api/forecasting", tags=["Forecasting"])
+async def get_forecasting(period: str = "30d"):
+    """Lead/revenue forecasting based on historical trends."""
+    try:
+        conn = psycopg2.connect(**DB_CONFIG)
+        cursor = conn.cursor()
+
+        # Determine date range
+        days = 30 if period == "30d" else 90 if period == "90d" else 7
+
+        # Get lead trends
+        cursor.execute(f"""
+            SELECT
+                DATE_TRUNC('week', created_at) as week,
+                COUNT(*) as total,
+                COUNT(*) FILTER (WHERE status = 'qualified') as qualified,
+                COUNT(*) FILTER (WHERE status = 'converted') as converted
+            FROM leads
+            WHERE created_at >= NOW() - INTERVAL '{days} days'
+            GROUP BY DATE_TRUNC('week', created_at)
+            ORDER BY week
+        """)
+        weekly = cursor.fetchall()
+
+        # Get current total leads and conversion rate
+        cursor.execute("""
+            SELECT COUNT(*),
+                   COUNT(*) FILTER (WHERE status = 'qualified' OR status = 'converted'),
+                   COUNT(*) FILTER (WHERE status = 'converted')
+            FROM leads
+        """)
+        total_row = cursor.fetchone()
+        total_leads, total_qualified, total_converted = total_row
+
+        conversion_rate = (total_converted / total_leads * 100) if total_leads > 0 else 0
+
+        cursor.close()
+        conn.close()
+
+        # Simple linear forecast: extrapolate from last 4 weeks
+        if len(weekly) >= 2:
+            recent = weekly[-1]
+            prev = weekly[-2]
+            growth_rate = (recent[1] - prev[1]) / prev[1] if prev[1] > 0 else 0
+            projected_leads_30d = int(recent[1] * (1 + growth_rate))
+            projected_leads_90d = int(recent[1] * (1 + growth_rate) ** 3)
+        else:
+            projected_leads_30d = int(total_leads * 0.1)
+            projected_leads_90d = int(total_leads * 0.3)
+
+        return {
+            "period": period,
+            "total_leads": total_leads,
+            "total_qualified": total_qualified,
+            "total_converted": total_converted,
+            "conversion_rate": round(conversion_rate, 2),
+            "weekly_trend": [
+                {"week": str(w[0].date()), "total": w[1], "qualified": w[2], "converted": w[3]}
+                for w in weekly
+            ],
+            "projections": {
+                "leads_30d": max(0, projected_leads_30d),
+                "leads_90d": max(0, projected_leads_90d),
+            }
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/metrics", tags=["Metrics"])
+async def get_metrics(type: str = "overview"):
+    """Unified metrics endpoint for dashboard widgets."""
+    try:
+        conn = psycopg2.connect(**DB_CONFIG)
+        cursor = conn.cursor()
+
+        if type == "overview":
+            cursor.execute("""
+                SELECT
+                    COUNT(*) FILTER (WHERE type = 'subscription') as subscriptions,
+                    COUNT(*) FILTER (WHERE type = 'one_time') as one_time_payments,
+                    SUM(amount) FILTER (WHERE status = 'completed') as total_revenue,
+                    COUNT(*) FILTER (WHERE status = 'pending') as pending_payments
+                FROM payments
+            """)
+            payments_row = cursor.fetchone()
+
+            cursor.execute("""
+                SELECT
+                    COUNT(*) FILTER (WHERE status = 'new') as new_leads,
+                    COUNT(*) FILTER (WHERE status = 'qualified') as qualified_leads,
+                    COUNT(*) FILTER (WHERE status = 'contacted') as contacted_leads,
+                    COUNT(*) FILTER (WHERE status = 'converted') as converted_leads
+                FROM leads
+            """)
+            leads_row = cursor.fetchone()
+
+            cursor.execute("""
+                SELECT COUNT(*) FROM subscriptions WHERE status = 'active'
+            """)
+            active_subs = cursor.fetchone()[0]
+
+            cursor.close()
+            conn.close()
+
+            return {
+                "subscriptions": payments_row[0] or 0,
+                "one_time_payments": payments_row[1] or 0,
+                "total_revenue": float(payments_row[2] or 0),
+                "pending_payments": payments_row[3] or 0,
+                "leads_new": leads_row[0] or 0,
+                "leads_qualified": leads_row[1] or 0,
+                "leads_contacted": leads_row[2] or 0,
+                "leads_converted": leads_row[3] or 0,
+                "active_subscriptions": active_subs or 0,
+            }
+        elif type == "revenue":
+            return await get_revenue_metrics()
+        elif type == "users":
+            return await get_user_metrics(period="week")
+        elif type == "conversions":
+            return await get_conversion_metrics()
+        else:
+            raise HTTPException(status_code=400, detail="Invalid type: use overview, revenue, users, or conversions")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ─── Standardized Exception Handlers (AIC-526) ────────────────────────────────
