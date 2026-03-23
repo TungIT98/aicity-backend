@@ -210,6 +210,32 @@ async def health():
     }
 
 
+@app.get("/live")
+async def liveness():
+    """Kubernetes liveness probe - is the process alive?"""
+    return {"status": "alive", "service": "AI City API"}
+
+
+@app.get("/ready")
+async def readiness():
+    """Kubernetes readiness probe - is the service ready to receive traffic?"""
+    # Check PostgreSQL is reachable
+    try:
+        conn = psycopg2.connect(**DB_CONFIG, connect_timeout=3)
+        conn.close()
+        pg_ready = True
+    except:
+        pg_ready = False
+
+    if pg_ready:
+        return {"status": "ready", "service": "AI City API"}
+    else:
+        return JSONResponse(
+            status_code=503,
+            content={"status": "not_ready", "service": "AI City API", "reason": "database_unavailable"}
+        )
+
+
 @app.post("/search", response_model=List[SearchResult])
 async def search(request: SearchRequest):
     """Semantic search using RAG"""

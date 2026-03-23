@@ -367,6 +367,30 @@ async def health():
         postgresql=pg_status
     )
 
+@app.get("/live")
+async def liveness():
+    """Kubernetes liveness probe - is the process alive?"""
+    return {"status": "alive", "service": "AI City API"}
+
+@app.get("/ready")
+async def readiness():
+    """Kubernetes readiness probe - is the service ready to receive traffic?"""
+    try:
+        conn = get_psycopg2().connect(**DB_CONFIG)
+        conn.close()
+        pg_ready = True
+    except:
+        pg_ready = False
+
+    if pg_ready:
+        return {"status": "ready", "service": "AI City API"}
+    else:
+        from fastapi.responses import JSONResponse
+        return JSONResponse(
+            status_code=503,
+            content={"status": "not_ready", "service": "AI City API", "reason": "database_unavailable"}
+        )
+
 @app.get("/leads")
 async def get_leads(limit: int = 50):
     try:

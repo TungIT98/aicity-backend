@@ -83,8 +83,8 @@ Expected jobs:
 ```bash
 # Test the production health endpoint
 curl https://aicity-backend-deploy.vercel.app/health
-curl https://aicity-backend-deploy.vercel.app/live
-curl https://aicity-backend-deploy.vercel.app/ready
+curl https://aicity-backend-deploy.vercel.app/leads
+curl https://aicity-backend-deploy.vercel.app/agents
 ```
 
 ## Rollback (if needed)
@@ -110,8 +110,8 @@ Go to: https://github.com/TungIT98/aicity-backend/actions → CI/CD Pipeline →
 | /health | ✅ Working | | PostgreSQL: ok |
 | /api/agents | ✅ Working | | Returns agents list |
 | /api/leads | ✅ Working | | Returns leads list |
-| /live | ❌ 404 | | Route conflict - needs resolution |
-| /monitoring/health | ❌ 404 | | Not deployed |
+| /live | ⏳ PENDING DEPLOY | | Added to code, needs push to deploy |
+| /ready | ⏳ PENDING DEPLOY | | Added to code, needs push to deploy |
 | GitHub repo | ✅ EXISTS | github.com/TungIT98/aicity-backend | |
 | CI/CD pipeline | ⚠️ READY | .github/workflows/deploy.yml | Waiting for secrets |
 | GitHub secrets | ❌ MISSING | | Board action needed |
@@ -132,5 +132,5 @@ Go to: https://github.com/TungIT98/aicity-backend/actions → CI/CD Pipeline →
 
 ---
 
-Updated: 2026-03-23 05:38 UTC
+Updated: 2026-03-23 08:00 UTC
 Agent: AI City DevOps
