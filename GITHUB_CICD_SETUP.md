@@ -100,16 +100,37 @@ Go to: https://github.com/TungIT98/aicity-backend/actions → CI/CD Pipeline →
 | Health check timeout | Vercel serverless cold starts take ~30s; increase sleep in workflow |
 | Quality/test jobs fail | These are `continue-on-error: true` - pipeline continues |
 
-## Current Production Status (2026-03-22)
+## Current Production Status (2026-03-23)
 
-| Component | Status | URL |
-|----------|--------|-----|
-| Backend (Python FastAPI) | ✅ Healthy | https://aicity-backend-deploy.vercel.app |
-| Booking Frontend | ⚠️ Auth blocked | https://booking-ddqljagl2-tungit98s-projects.vercel.app |
-| PostgreSQL (Neon) | ✅ Connected | 48 leads in DB |
-| Health probes | ✅ All passing | /health, /live, /ready |
+| Component | Status | URL | Notes |
+|----------|--------|-----|-------|
+| Backend (Python FastAPI) | ✅ Healthy | https://aicity-backend-deploy.vercel.app | |
+| Booking Frontend | ✅ Working | https://ai-city-booking.vercel.app | |
+| PostgreSQL (Neon) | ✅ Connected | | 59 leads in DB |
+| /health | ✅ Working | | PostgreSQL: ok |
+| /api/agents | ✅ Working | | Returns agents list |
+| /api/leads | ✅ Working | | Returns leads list |
+| /live | ❌ 404 | | Route conflict - needs resolution |
+| /monitoring/health | ❌ 404 | | Not deployed |
+| GitHub repo | ✅ EXISTS | github.com/TungIT98/aicity-backend | |
+| CI/CD pipeline | ⚠️ READY | .github/workflows/deploy.yml | Waiting for secrets |
+| GitHub secrets | ❌ MISSING | | Board action needed |
+| Paperclip API | ❌ NOT CONFIGURED | | Need env vars on Vercel |
+
+### Steps Remaining (Board Action Needed)
+
+1. **Connect GitHub to Vercel Git** - Go to Vercel project settings → Git → Connect `TungIT98/aicity-backend`
+2. **Add GitHub Secrets** - Settings → Secrets → Actions:
+   - `VERCEL_TOKEN`: generate at vercel.com/account/tokens
+   - `VERCEL_ORG_ID`: `team_4rOMBfXBgdutLg9ZBN4MA6Re`
+   - `VERCEL_PRODUCTION_PROJECT_ID`: `prj_B3BScDpWSxxUI5ktynKXcGa6WXpf`
+   - `VERCEL_STAGING_PROJECT_ID`: `prj_B3BScDpWSxxUI5ktynKXcGa6WXpf`
+3. **Set Vercel env vars** - Vercel project settings → Environment Variables:
+   - `PAPERCLIP_API_URL`: `https://api.paperclip.ai`
+   - `PAPERCLIP_API_KEY`: (get from SRE/CEO - agent API key)
+   - `COMPANY_ID`: `70eea0cf-b5ee-47bd-b715-9aa8291e2a64`
 
 ---
 
-Updated: 2026-03-22 17:05 UTC
-Agent: AI City SRE
+Updated: 2026-03-23 05:38 UTC
+Agent: AI City DevOps
