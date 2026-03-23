@@ -1562,16 +1562,13 @@ async def api_list_reports(limit: int = 20):
     try:
         conn = get_psycopg2().connect(**DB_CONFIG)
         cur = conn.cursor()
-        cur.execute("""
-            SELECT id, name, description, type, created_at FROM reports
-            ORDER BY created_at DESC LIMIT %s
-        """, (limit,))
+        cur.execute("SELECT id, created_at FROM reports ORDER BY created_at DESC LIMIT %s", (limit,))
         rows = cur.fetchall()
         cur.close()
         conn.close()
-        return [{"id": r[0], "name": r[1], "description": r[2], "type": r[3], "created_at": str(r[4])} for r in rows]
+        return [{"id": r[0], "created_at": str(r[1])} for r in rows]
     except Exception as e:
-        return {"error": str(e), "reports": []}
+        return {"reports": [], "error": str(e)}
 
 
 @app.post("/api/reports/generate")
@@ -1663,23 +1660,25 @@ async def api_metrics(type: str = "overview"):
         conn = get_psycopg2().connect(**DB_CONFIG)
         cur = conn.cursor()
         cur.execute("""
-            SELECT COUNT(*) FILTER (WHERE type = 'subscription'),
-                   COUNT(*) FILTER (WHERE type = 'one_time'),
-                   COALESCE(SUM(amount), 0) FILTER (WHERE status = 'completed'),
-                   COUNT(*) FILTER (WHERE status = 'pending')
+            SELECT
+                COUNT(CASE WHEN type = 'subscription' THEN 1 END),
+                COUNT(CASE WHEN type = 'one_time' THEN 1 END),
+                COALESCE(SUM(CASE WHEN status = 'completed' THEN amount ELSE 0 END), 0),
+                COUNT(CASE WHEN status = 'pending' THEN 1 END)
             FROM payments
         """)
         payments_row = cur.fetchone()
         cur.execute("""
-            SELECT COUNT(*) FILTER (WHERE status = 'new'),
-                   COUNT(*) FILTER (WHERE status = 'qualified'),
-                   COUNT(*) FILTER (WHERE status = 'contacted'),
-                   COUNT(*) FILTER (WHERE status = 'converted')
+            SELECT COUNT(CASE WHEN status = 'new' THEN 1 END),
+                   COUNT(CASE WHEN status = 'qualified' THEN 1 END),
+                   COUNT(CASE WHEN status = 'contacted' THEN 1 END),
+                   COUNT(CASE WHEN status = 'converted' THEN 1 END)
             FROM leads
         """)
         leads_row = cur.fetchone()
         cur.execute("SELECT COUNT(*) FROM subscriptions WHERE status = 'active'")
-        active_subs = cur.fetchone()[0]
+        active_subs_row = cur.fetchone()
+        active_subs = active_subs_row[0] if active_subs_row else 0
         cur.close()
         conn.close()
         return {
