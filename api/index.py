@@ -1659,15 +1659,17 @@ async def api_metrics(type: str = "overview"):
     try:
         conn = get_psycopg2().connect(**DB_CONFIG)
         cur = conn.cursor()
+        # payments table has payment_method, status columns
         cur.execute("""
             SELECT
-                COUNT(CASE WHEN type = 'subscription' THEN 1 END),
-                COUNT(CASE WHEN type = 'one_time' THEN 1 END),
+                COUNT(CASE WHEN payment_method = 'stripe' THEN 1 END),
+                COUNT(CASE WHEN payment_method != 'stripe' THEN 1 END),
                 COALESCE(SUM(CASE WHEN status = 'completed' THEN amount ELSE 0 END), 0),
                 COUNT(CASE WHEN status = 'pending' THEN 1 END)
             FROM payments
         """)
         payments_row = cur.fetchone()
+        # leads table
         cur.execute("""
             SELECT COUNT(CASE WHEN status = 'new' THEN 1 END),
                    COUNT(CASE WHEN status = 'qualified' THEN 1 END),
@@ -1676,14 +1678,18 @@ async def api_metrics(type: str = "overview"):
             FROM leads
         """)
         leads_row = cur.fetchone()
-        cur.execute("SELECT COUNT(*) FROM subscriptions WHERE status = 'active'")
-        active_subs_row = cur.fetchone()
-        active_subs = active_subs_row[0] if active_subs_row else 0
+        # subscriptions table
+        try:
+            cur.execute("SELECT COUNT(*) FROM subscriptions WHERE status = 'active'")
+            active_subs_row = cur.fetchone()
+            active_subs = active_subs_row[0] if active_subs_row else 0
+        except Exception:
+            active_subs = 0
         cur.close()
         conn.close()
         return {
-            "subscriptions": payments_row[0] or 0,
-            "one_time_payments": payments_row[1] or 0,
+            "stripe_payments": payments_row[0] or 0,
+            "other_payments": payments_row[1] or 0,
             "total_revenue": float(payments_row[2] or 0),
             "pending_payments": payments_row[3] or 0,
             "leads_new": leads_row[0] or 0,
